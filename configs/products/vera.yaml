@@ -1,0 +1,11 @@
+# VERA OpenAPI - fetch from repo (releases often have no assets)
+productId: vera
+specSource:
+  type: github_repo
+  repo: Aedes-datastandaarden/vera-openapi
+  branch: main
+  path: Ketenprocessen/VHE.yaml
+normalize:
+  enabled: true
+  tool: redocly
+usageMapPath: contracts/usage-maps/vera.json

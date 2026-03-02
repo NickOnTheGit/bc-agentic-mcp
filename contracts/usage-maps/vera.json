@@ -1,0 +1,6 @@
+{
+  "endpoints": [
+    { "method": "GET", "path": "/v1/vhe/huuropzeggingen" },
+    { "method": "GET", "path": "/v1/bdo/contracts" }
+  ]
+}
