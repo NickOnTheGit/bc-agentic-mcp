@@ -1,0 +1,9 @@
+{
+  "servers": {
+    "bc-agentic": {
+      "command": "bc-agentic-mcp",
+      "args": ["--project-root", "${workspaceFolder}"],
+      "transport": "stdio"
+    }
+  }
+}
