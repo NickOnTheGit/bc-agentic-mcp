@@ -332,8 +332,14 @@ def create_server(project_root: Optional[str] = None) -> FastMCP:
         task_ids: Optional[List[str]] = None,
         mode: str = "auto",
         dry_run: bool = False,
+        # Phase 2: code execution
+        code: Optional[str] = None,
+        file_path: Optional[str] = None,
+        attempt: int = 1,
+        previous_diagnostics: Optional[str] = None,
     ) -> Dict[str, Any]:
-        """Execute implementation tasks from TASKS.md within scope boundaries."""
+        """Execute implementation tasks. Phase 1 (no code): prepare context.
+        Phase 2 (with code): write file, compile, return diagnostics."""
         return await _run_tool(
             "bc_implement", handle_implement,
             project_root=project_root or str(_get_ctx().config.project_root),
@@ -341,6 +347,10 @@ def create_server(project_root: Optional[str] = None) -> FastMCP:
             task_ids=task_ids,
             mode=mode,
             dry_run=dry_run,
+            code=code,
+            file_path=file_path,
+            attempt=attempt,
+            previous_diagnostics=previous_diagnostics,
         )
 
     @mcp.tool(name="bc_generate_tests")

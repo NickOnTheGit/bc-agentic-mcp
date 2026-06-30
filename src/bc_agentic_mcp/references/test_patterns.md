@@ -100,3 +100,33 @@ Best practices:
 - Describe the action in past tense.
 - End with the expected outcome.
 - Use underscores to separate logical segments.
+
+## Reserved AL Test Attributes — Forbidden
+
+These attributes are NOT valid in Business Central AL tests and will cause
+compilation failures. NEVER use them:
+- `[SetUp]`
+- `[TearDown]`
+- `[TestInitialize]`
+- `[TestCleanup]`
+- `[BeforeEach]`
+- `[AfterEach]`
+
+Cleanup must be an explicit local helper called from the `[Test]` method:
+```
+local procedure CleanupTestData()
+begin
+    // Reset test data
+end;
+```
+
+## GIVEN/WHEN/THEN Comments — Mandatory
+
+Every `[Test]` procedure MUST contain these three comment sections:
+```
+// [GIVEN] Arrange — set up test data
+// [WHEN] Act — run the code under test
+// [THEN] Assert — verify the expected outcome
+```
+
+Missing any of these three sections is a review FAIL.
