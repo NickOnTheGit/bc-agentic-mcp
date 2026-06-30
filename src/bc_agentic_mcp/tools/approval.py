@@ -3,6 +3,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Dict, Any
 
+from bc_agentic_mcp.validation import validate_phase, validate_decision, validate_idempotency_key
+
 
 VALID_PHASES = {"spec", "design", "tasks", "implement", "complete"}
 VALID_DECISIONS = {"approve", "reject", "request_changes"}
@@ -17,8 +19,6 @@ async def handle_request_approval(
     idempotency_key: str,
 ) -> Dict[str, Any]:
     """Submit a phase artifact for human review."""
-    from bc_agentic_mcp.validation import validate_phase, validate_idempotency_key
-
     validate_phase(phase, VALID_PHASES)
     validate_idempotency_key(idempotency_key)
 
@@ -64,8 +64,6 @@ async def handle_submit_decision(
     feedback: str = "",
 ) -> Dict[str, Any]:
     """Record the human's decision on a pending approval."""
-    from bc_agentic_mcp.validation import validate_phase, validate_decision
-
     validate_phase(phase, VALID_PHASES)
     validate_decision(decision, VALID_DECISIONS)
 

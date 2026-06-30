@@ -1,4 +1,5 @@
 """Input validation utilities. See spec Section 4.4."""
+import os
 from typing import Set
 
 
@@ -19,7 +20,9 @@ def validate_spec_name(name: str) -> None:
 
 
 def sanitize_path(path: str) -> str:
-    """Validate a file path: block traversal and null bytes."""
+    """Validate a file path: block absolute paths, traversal, and null bytes."""
+    if os.path.isabs(path):
+        raise ValueError("path must be relative, not absolute")
     if ".." in path:
         raise ValueError("path must not contain traversal (..)")
     if "\0" in path:

@@ -41,3 +41,31 @@ def test_block_reason_outside_root():
         enf = ScopeEnforcer(allowed_files=[], project_root=root)
         reason = enf.block_reason("../proj-evil/Hack.al")
         assert "outside project root" in reason
+
+
+def test_check_create_rejects_undeclared_extension():
+    """check_create must validate allowed_extensions, not just project root."""
+    with tempfile.TemporaryDirectory() as d:
+        base = Path(d)
+        root = base / "proj"
+        root.mkdir()
+        (root / "EmpireRental").mkdir(parents=True)
+        (root / "EmpireHousing").mkdir(parents=True)
+        enf = ScopeEnforcer(
+            allowed_files=[],
+            project_root=root,
+            allowed_extensions=["EmpireRental"],
+        )
+        # Creating a file under declared extension is OK
+        assert enf.check_create("EmpireRental/src/Tables/Test.Table.al") is True
+        # Creating a file under undeclared extension is NOT OK
+        assert enf.check_create("EmpireHousing/src/Tables/Test.Table.al") is False
+
+
+def test_check_create_allows_when_no_extensions_declared():
+    """When allowed_extensions is empty, check_create should be permissive (backward compat)."""
+    with tempfile.TemporaryDirectory() as d:
+        root = Path(d) / "proj"
+        root.mkdir()
+        enf = ScopeEnforcer(allowed_files=[], project_root=root, allowed_extensions=[])
+        assert enf.check_create("src/Anything.al") is True

@@ -5,6 +5,8 @@ import json
 from pathlib import Path
 from typing import Dict, Any
 
+from bc_agentic_mcp.spec_loader import load_spec
+
 
 async def handle_upgrade_codeunit(
     project_root: str,
@@ -13,7 +15,7 @@ async def handle_upgrade_codeunit(
     """Generate an upgrade codeunit scaffold (Subtype = Upgrade)."""
     root = Path(project_root).resolve()
     specs_dir = root / ".specs" / spec_name
-    spec = json.loads((specs_dir / "spec.json").read_text())
+    spec = load_spec(specs_dir)
 
     module = spec.get("module", root.name)
     lines = [

@@ -1,9 +1,14 @@
 """State file management for .specs/state.json. See spec Section 3.1."""
 import json
+import threading
 from dataclasses import dataclass, field, asdict
 from pathlib import Path
 from typing import Dict, Optional
 from datetime import datetime, timezone
+
+
+# Module-level lock for multi-threaded safety
+_lock = threading.Lock()
 
 
 @dataclass
@@ -57,13 +62,23 @@ class StateManager:
             raise FileNotFoundError(
                 f"State file not found: {self.state_path}. Run bc_init first."
             )
+        with _lock:
+            return self._load_unsafe()
+
+    def _load_unsafe(self) -> SpecState:
+        """Load state without lock (caller must hold _lock)."""
         data = json.loads(self.state_path.read_text())
         state = SpecState(
             active_spec=data.get("active_spec"),
             total_specs=data.get("total_specs", 0),
         )
         for name, entry in data.get("specs", {}).items():
-            state.specs[name] = SpecEntry(**entry)
+            # Filter to known fields to survive future schema additions
+            known = {
+                k: v for k, v in entry.items()
+                if k in SpecEntry.__dataclass_fields__
+            }
+            state.specs[name] = SpecEntry(**known)
         return state
 
     def _write(self, state: SpecState) -> None:
@@ -75,18 +90,23 @@ class StateManager:
         }
         self.state_path.parent.mkdir(parents=True, exist_ok=True)
         tmp_path = self.state_path.with_suffix(".json.tmp")
-        tmp_path.write_text(json.dumps(data, indent=2, default=str))
-        tmp_path.replace(self.state_path)
+        try:
+            tmp_path.write_text(json.dumps(data, indent=2, default=str))
+            tmp_path.replace(self.state_path)
+        finally:
+            if tmp_path.exists():
+                tmp_path.unlink(missing_ok=True)
 
     def add_spec(self, name: str, tdd_type: str) -> SpecEntry:
         """Register a new spec."""
-        state = self.load()
-        now = datetime.now(timezone.utc).isoformat()
-        entry = SpecEntry(name=name, phase="specify", created=now, last_activity=now)
-        state.specs[name] = entry
-        state.total_specs = len(state.specs)
-        self._write(state)
-        return entry
+        with _lock:
+            state = self._load_unsafe()
+            now = datetime.now(timezone.utc).isoformat()
+            entry = SpecEntry(name=name, phase="specify", created=now, last_activity=now)
+            state.specs[name] = entry
+            state.total_specs = len(state.specs)
+            self._write(state)
+            return entry
 
     def get_spec(self, name: str) -> SpecEntry:
         """Get a spec by name."""
@@ -97,27 +117,30 @@ class StateManager:
 
     def update_phase(self, name: str, phase: str) -> None:
         """Update a spec's current phase."""
-        state = self.load()
-        if name not in state.specs:
-            raise KeyError(f"Spec '{name}' not found")
-        state.specs[name].phase = phase
-        state.specs[name].last_activity = datetime.now(timezone.utc).isoformat()
-        self._write(state)
+        with _lock:
+            state = self._load_unsafe()
+            if name not in state.specs:
+                raise KeyError(f"Spec '{name}' not found")
+            state.specs[name].phase = phase
+            state.specs[name].last_activity = datetime.now(timezone.utc).isoformat()
+            self._write(state)
 
     def set_active(self, name: str) -> None:
         """Set the active spec."""
-        state = self.load()
-        if name not in state.specs:
-            raise KeyError(f"Spec '{name}' not found")
-        state.active_spec = name
-        self._write(state)
+        with _lock:
+            state = self._load_unsafe()
+            if name not in state.specs:
+                raise KeyError(f"Spec '{name}' not found")
+            state.active_spec = name
+            self._write(state)
 
     def archive_spec(self, name: str, outcome: str) -> None:
         """Close out a spec."""
-        state = self.load()
-        if name not in state.specs:
-            raise KeyError(f"Spec '{name}' not found")
-        state.specs[name].phase = "closed"
-        state.specs[name].outcome = outcome
-        state.specs[name].last_activity = datetime.now(timezone.utc).isoformat()
-        self._write(state)
+        with _lock:
+            state = self._load_unsafe()
+            if name not in state.specs:
+                raise KeyError(f"Spec '{name}' not found")
+            state.specs[name].phase = "closed"
+            state.specs[name].outcome = outcome
+            state.specs[name].last_activity = datetime.now(timezone.utc).isoformat()
+            self._write(state)

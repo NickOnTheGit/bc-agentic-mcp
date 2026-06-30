@@ -62,7 +62,7 @@ def discover_al_tool() -> ALToolStatus:
             parent = candidate.parent
             pattern = candidate.name
             if parent.exists():
-                matches = list(parent.glob(pattern))
+                matches = sorted(parent.glob(pattern), key=lambda p: p.stat().st_mtime, reverse=True)
                 if matches:
                     return ALToolStatus(altool_path=matches[0])
         elif candidate.exists():

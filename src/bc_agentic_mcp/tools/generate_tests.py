@@ -5,6 +5,8 @@ import json
 from pathlib import Path
 from typing import Dict, Any
 
+from bc_agentic_mcp.spec_loader import load_spec
+
 
 async def handle_generate_tests(
     project_root: str,
@@ -13,7 +15,7 @@ async def handle_generate_tests(
     """Generate an AL test codeunit scaffold (Subtype = Test) for the spec."""
     root = Path(project_root).resolve()
     specs_dir = root / ".specs" / spec_name
-    spec = json.loads((specs_dir / "spec.json").read_text())
+    spec = load_spec(specs_dir)
 
     rules = spec.get("business_rules", [])
     test_lines = [

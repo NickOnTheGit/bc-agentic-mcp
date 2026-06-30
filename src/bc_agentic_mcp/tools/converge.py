@@ -3,6 +3,7 @@ import json
 from pathlib import Path
 from typing import Dict, Any
 
+from bc_agentic_mcp.spec_loader import load_spec
 from bc_agentic_mcp.tools.analyze import scan_al_files
 
 
@@ -13,7 +14,7 @@ async def handle_converge(
     """Compare what was declared in spec.json against what exists on disk."""
     root = Path(project_root).resolve()
     specs_dir = root / ".specs" / spec_name
-    spec = json.loads((specs_dir / "spec.json").read_text())
+    spec = load_spec(specs_dir)
 
     declared = spec.get("objects_to_create", [])
     declared_names = {(o["type"], o["name"]) for o in declared}

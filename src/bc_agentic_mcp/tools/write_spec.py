@@ -107,6 +107,15 @@ async def handle_write_spec(
     spec_path = specs_dir / "spec.json"
     spec_path.write_text(json.dumps(spec_json, indent=2))
 
+    # Register with state manager so bc_status can track it
+    from bc_agentic_mcp.state import StateManager
+    sm = StateManager(root / ".specs")
+    sm.init()  # ensures state.json exists
+    try:
+        sm.get_spec(spec_name)
+    except KeyError:
+        sm.add_spec(spec_name, template or "tdd")
+
     return {
         "tdd_path": str(tdd_path),
         "machine_spec_path": str(spec_path),
