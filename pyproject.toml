@@ -1,0 +1,31 @@
+[build-system]
+requires = ["setuptools>=68.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "bc-agentic-mcp"
+version = "0.1.0"
+description = "Agentic MCP server for Business Central AL development"
+requires-python = ">=3.10"
+dependencies = [
+    "mcp>=1.2.0",
+    "pydantic>=2.0.0",
+]
+license = {text = "MIT"}
+readme = "README.md"
+
+[project.optional-dependencies]
+dev = ["pytest>=8.0", "pytest-asyncio>=0.24", "pytest-mock>=3.14"]
+
+[project.scripts]
+bc-agentic-mcp = "bc_agentic_mcp.server:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-data]
+bc_agentic_mcp = ["prompts/*.md", "references/*"]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]
