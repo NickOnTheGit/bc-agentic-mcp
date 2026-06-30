@@ -42,6 +42,8 @@ class TokenBucket:
             self._refill()
             if self._tokens >= 1:
                 return 0.0
+            if self.rate <= 0:
+                return float("inf")
             return (1.0 - self._tokens) / self.rate
 
 

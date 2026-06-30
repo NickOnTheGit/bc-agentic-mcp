@@ -1,15 +1,28 @@
-"""BC Agentic MCP Server — main entry point. See spec Section 2.1.
+"""BC Agentic MCP Server — main entry point with infrastructure wiring.
 
-Uses FastMCP (mcp.server.fastmcp). Tools are thin wrappers that delegate to the
-handlers in bc_agentic_mcp.tools.*; all scope/ID/schema enforcement lives in the
-handlers and helper modules so it is independent of model quality.
+Infrastructure lifecycle:
+  1. Config loaded (ServerConfig)
+  2. Rate limiter instantiated per-session
+  3. Audit logger instantiated (writes to .specs/.audit/)
+  4. AL tool discovered (graceful degradation)
+  5. All 16 tools registered with rate-limit + audit wrappers
 """
 import argparse
+import inspect
 import os
+import sys
+import time
+from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 from mcp.server.fastmcp import FastMCP
 
+from bc_agentic_mcp.config import ServerConfig, discover_al_tool, discover_app_json
+from bc_agentic_mcp.rate_limiter import RateLimiter
+from bc_agentic_mcp.audit import AuditLogger
+from bc_agentic_mcp.errors import MCPError, ErrorCode, error_response
+
+# --- Tool handlers ---
 from bc_agentic_mcp.tools.init import handle_init
 from bc_agentic_mcp.tools.analyze import analyze_module
 from bc_agentic_mcp.tools.clarify import handle_clarify
@@ -27,13 +40,101 @@ from bc_agentic_mcp.tools.feedback import handle_feedback
 from bc_agentic_mcp.tools.archive import handle_archive
 
 
-def _cwd() -> str:
-    return os.getcwd()
+# ---------------------------------------------------------------------------
+# Tool wrapper: injects rate limiting + audit logging around every call
+# ---------------------------------------------------------------------------
 
 
-def create_server() -> FastMCP:
-    """Create and configure the MCP server with all 16 tools."""
+class ToolContext:
+    """Infrastructure injected into every tool call."""
+
+    __slots__ = ("config", "rate_limiter", "audit")
+
+    def __init__(self, config: ServerConfig, rate_limiter: RateLimiter, audit: AuditLogger):
+        self.config = config
+        self.rate_limiter = rate_limiter
+        self.audit = audit
+
+
+_ctx: Optional[ToolContext] = None  # module-level singleton, set at boot
+
+
+def _get_ctx() -> ToolContext:
+    """Get the module-level ToolContext singleton."""
+    assert _ctx is not None, "ToolContext not initialized — server must call create_server()"
+    return _ctx
+
+
+async def _run_tool(name: str, handler, session_id: str = "default", **kwargs) -> Dict[str, Any]:
+    """Rate-limit, execute, audit-log, error-wrap a tool handler.
+
+    Supports both async and sync handlers transparently.
+    """
+    ctx = _get_ctx()
+
+    # 1. Rate limit check
+    blocked, retry_after = ctx.rate_limiter.check(name)
+    if blocked:
+        return error_response(
+            ErrorCode.CLIENT_ERROR,
+            f"Rate limit exceeded for {name}",
+            hint=f"Wait {retry_after:.1f}s before retrying",
+            retry_after=int(retry_after),
+        )
+
+    # 2. Execute handler (supports both sync and async handlers)
+    started = time.monotonic()
+    try:
+        if inspect.iscoroutinefunction(handler):
+            result = await handler(**kwargs)
+        else:
+            result = handler(**kwargs)
+        ctx.audit.log(name, session_id, success=True, duration_ms=int((time.monotonic() - started) * 1000))
+        return result
+    except MCPError as e:
+        ctx.audit.log(name, session_id, success=False, duration_ms=int((time.monotonic() - started) * 1000))
+        return error_response(e.code, e.message, hint=e.hint, details=e.details)
+    except Exception as e:
+        ctx.audit.log(name, session_id, success=False, duration_ms=int((time.monotonic() - started) * 1000))
+        return error_response(
+            ErrorCode.SERVER_ERROR,
+            f"Internal error in {name}: {e}",
+            hint="Retry the operation. If the error persists, report it.",
+            retry_after=10,
+        )
+
+
+# ---------------------------------------------------------------------------
+# Server creation
+# ---------------------------------------------------------------------------
+
+
+def create_server(project_root: Optional[str] = None) -> FastMCP:
+    """Create and configure the MCP server with all 16 tools + infrastructure."""
+    global _ctx
+    root = Path(project_root or os.getcwd()).resolve()
+
+    # Bootstrap config
+    config = ServerConfig(
+        project_root=root,
+        al_tool=discover_al_tool(),
+        app_json_path=discover_app_json(root),
+    )
+
+    # Bootstrap infrastructure
+    specs_dir = root / ".specs"
+    rate_limiter = RateLimiter(
+        per_tool_rate=config.per_tool_rate,
+        per_session_rate=config.per_session_rate,
+    )
+    audit = AuditLogger(specs_dir)
+    _ctx = ToolContext(config=config, rate_limiter=rate_limiter, audit=audit)
+
     mcp = FastMCP("bc-agentic-mcp")
+
+    # -----------------------------------------------------------------------
+    # Register all 16 tools with rate-limiting + audit wrapping
+    # -----------------------------------------------------------------------
 
     @mcp.tool(name="bc_init")
     async def bc_init(
@@ -42,7 +143,12 @@ def create_server() -> FastMCP:
         constitution: Optional[str] = None,
     ) -> Dict[str, Any]:
         """Initialize .specs/ directory structure for BC agentic development."""
-        return await handle_init(project_root or _cwd(), module_name, constitution)
+        return await _run_tool(
+            "bc_init", handle_init,
+            project_root=project_root or str(_get_ctx().config.project_root),
+            module_name=module_name,
+            constitution=constitution,
+        )
 
     @mcp.tool(name="bc_analyze_module")
     async def bc_analyze_module(
@@ -51,7 +157,12 @@ def create_server() -> FastMCP:
         depth: str = "basic",
     ) -> Dict[str, Any]:
         """Read an AL module's structure and extract naming/patterns/dependencies."""
-        return analyze_module(project_root or _cwd(), spec_name, depth)
+        return await _run_tool(
+            "bc_analyze_module", analyze_module,
+            module_path=project_root or str(_get_ctx().config.project_root),
+            spec_name=spec_name,
+            depth=depth,
+        )
 
     @mcp.tool(name="bc_clarify")
     async def bc_clarify(
@@ -62,8 +173,13 @@ def create_server() -> FastMCP:
         specific_concern: Optional[str] = None,
     ) -> Dict[str, Any]:
         """Generate structured clarification questions from human requirement bullets."""
-        return await handle_clarify(
-            project_root or _cwd(), spec_name, context, analysis, specific_concern
+        return await _run_tool(
+            "bc_clarify", handle_clarify,
+            project_root=project_root or str(_get_ctx().config.project_root),
+            spec_name=spec_name,
+            context=context,
+            analysis=analysis,
+            specific_concern=specific_concern,
         )
 
     @mcp.tool(name="bc_write_spec")
@@ -77,14 +193,15 @@ def create_server() -> FastMCP:
         template: str = "tdd",
     ) -> Dict[str, Any]:
         """Generate a TDD and machine-consumable spec from human bullets."""
-        return await handle_write_spec(
-            project_root or _cwd(),
-            spec_name,
-            human_bullets,
-            analysis,
-            clarifications,
-            idempotency_key,
-            template,
+        return await _run_tool(
+            "bc_write_spec", handle_write_spec,
+            project_root=project_root or str(_get_ctx().config.project_root),
+            spec_name=spec_name,
+            human_bullets=human_bullets,
+            analysis=analysis,
+            clarifications=clarifications,
+            idempotency_key=idempotency_key,
+            template=template,
         )
 
     @mcp.tool(name="bc_plan_design")
@@ -94,7 +211,12 @@ def create_server() -> FastMCP:
         machine_spec_path: Optional[str] = None,
     ) -> Dict[str, Any]:
         """Generate the technical design (DESIGN.md + ADRs) from the machine spec."""
-        return await handle_plan_design(project_root or _cwd(), spec_name, machine_spec_path)
+        return await _run_tool(
+            "bc_plan_design", handle_plan_design,
+            project_root=project_root or str(_get_ctx().config.project_root),
+            spec_name=spec_name,
+            machine_spec_path=machine_spec_path,
+        )
 
     @mcp.tool(name="bc_breakdown_tasks")
     async def bc_breakdown_tasks(
@@ -103,7 +225,12 @@ def create_server() -> FastMCP:
         design_path: Optional[str] = None,
     ) -> Dict[str, Any]:
         """Decompose the design into dependency-ordered implementation tasks."""
-        return await handle_breakdown_tasks(project_root or _cwd(), spec_name, design_path)
+        return await _run_tool(
+            "bc_breakdown_tasks", handle_breakdown_tasks,
+            project_root=project_root or str(_get_ctx().config.project_root),
+            spec_name=spec_name,
+            design_path=design_path,
+        )
 
     @mcp.tool(name="bc_request_approval")
     async def bc_request_approval(
@@ -115,8 +242,14 @@ def create_server() -> FastMCP:
         project_root: Optional[str] = None,
     ) -> Dict[str, Any]:
         """Submit a phase artifact for human review."""
-        return await handle_request_approval(
-            project_root or _cwd(), spec_name, phase, artifact_path, summary, idempotency_key
+        return await _run_tool(
+            "bc_request_approval", handle_request_approval,
+            project_root=project_root or str(_get_ctx().config.project_root),
+            spec_name=spec_name,
+            phase=phase,
+            artifact_path=artifact_path,
+            summary=summary,
+            idempotency_key=idempotency_key,
         )
 
     @mcp.tool(name="bc_submit_decision")
@@ -128,8 +261,13 @@ def create_server() -> FastMCP:
         feedback: str = "",
     ) -> Dict[str, Any]:
         """Record the human's decision on a pending approval."""
-        return await handle_submit_decision(
-            project_root or _cwd(), spec_name, phase, decision, feedback
+        return await _run_tool(
+            "bc_submit_decision", handle_submit_decision,
+            project_root=project_root or str(_get_ctx().config.project_root),
+            spec_name=spec_name,
+            phase=phase,
+            decision=decision,
+            feedback=feedback,
         )
 
     @mcp.tool(name="bc_status")
@@ -138,7 +276,11 @@ def create_server() -> FastMCP:
         spec_name: Optional[str] = None,
     ) -> Dict[str, Any]:
         """Show the current state of all specs (or one spec)."""
-        return await handle_status(project_root or _cwd(), spec_name)
+        return await _run_tool(
+            "bc_status", handle_status,
+            project_root=project_root or str(_get_ctx().config.project_root),
+            spec_name=spec_name,
+        )
 
     @mcp.tool(name="bc_implement")
     async def bc_implement(
@@ -149,7 +291,14 @@ def create_server() -> FastMCP:
         dry_run: bool = False,
     ) -> Dict[str, Any]:
         """Execute implementation tasks from TASKS.md within scope boundaries."""
-        return await handle_implement(project_root or _cwd(), spec_name, task_ids, mode, dry_run)
+        return await _run_tool(
+            "bc_implement", handle_implement,
+            project_root=project_root or str(_get_ctx().config.project_root),
+            spec_name=spec_name,
+            task_ids=task_ids,
+            mode=mode,
+            dry_run=dry_run,
+        )
 
     @mcp.tool(name="bc_generate_tests")
     async def bc_generate_tests(
@@ -157,7 +306,11 @@ def create_server() -> FastMCP:
         project_root: Optional[str] = None,
     ) -> Dict[str, Any]:
         """Generate an AL test codeunit scaffold for the spec."""
-        return await handle_generate_tests(project_root or _cwd(), spec_name)
+        return await _run_tool(
+            "bc_generate_tests", handle_generate_tests,
+            project_root=project_root or str(_get_ctx().config.project_root),
+            spec_name=spec_name,
+        )
 
     @mcp.tool(name="bc_upgrade_codeunit")
     async def bc_upgrade_codeunit(
@@ -165,7 +318,11 @@ def create_server() -> FastMCP:
         project_root: Optional[str] = None,
     ) -> Dict[str, Any]:
         """Generate an AL upgrade codeunit scaffold for the spec."""
-        return await handle_upgrade_codeunit(project_root or _cwd(), spec_name)
+        return await _run_tool(
+            "bc_upgrade_codeunit", handle_upgrade_codeunit,
+            project_root=project_root or str(_get_ctx().config.project_root),
+            spec_name=spec_name,
+        )
 
     @mcp.tool(name="bc_converge")
     async def bc_converge(
@@ -173,7 +330,11 @@ def create_server() -> FastMCP:
         project_root: Optional[str] = None,
     ) -> Dict[str, Any]:
         """Compare the implementation on disk against the declared spec."""
-        return await handle_converge(project_root or _cwd(), spec_name)
+        return await _run_tool(
+            "bc_converge", handle_converge,
+            project_root=project_root or str(_get_ctx().config.project_root),
+            spec_name=spec_name,
+        )
 
     @mcp.tool(name="bc_quality_check")
     async def bc_quality_check(
@@ -181,7 +342,11 @@ def create_server() -> FastMCP:
         spec_name: str = "",
     ) -> Dict[str, Any]:
         """Run AL analyzers (CodeCop/AppSourceCop/UICop) via the AL MCP Server."""
-        return await handle_quality_check(project_root or _cwd(), spec_name)
+        return await _run_tool(
+            "bc_quality_check", handle_quality_check,
+            project_root=project_root or str(_get_ctx().config.project_root),
+            spec_name=spec_name,
+        )
 
     @mcp.tool(name="bc_feedback")
     async def bc_feedback(
@@ -191,7 +356,13 @@ def create_server() -> FastMCP:
         rating: int = 0,
     ) -> Dict[str, Any]:
         """Record human feedback for a spec."""
-        return await handle_feedback(project_root or _cwd(), spec_name, feedback, rating)
+        return await _run_tool(
+            "bc_feedback", handle_feedback,
+            project_root=project_root or str(_get_ctx().config.project_root),
+            spec_name=spec_name,
+            feedback=feedback,
+            rating=rating,
+        )
 
     @mcp.tool(name="bc_archive")
     async def bc_archive(
@@ -200,7 +371,12 @@ def create_server() -> FastMCP:
         outcome: str = "merged",
     ) -> Dict[str, Any]:
         """Close out a spec with an outcome."""
-        return await handle_archive(project_root or _cwd(), spec_name, outcome)
+        return await _run_tool(
+            "bc_archive", handle_archive,
+            project_root=project_root or str(_get_ctx().config.project_root),
+            spec_name=spec_name,
+            outcome=outcome,
+        )
 
     return mcp
 
@@ -212,9 +388,14 @@ def main():
         "--project-root", default=os.getcwd(), help="AL project root directory"
     )
     args = parser.parse_args()
-    os.chdir(args.project_root)
 
-    server = create_server()
+    root = Path(args.project_root).resolve()
+    if not root.is_dir():
+        print(f"FATAL: {root} is not a directory", file=sys.stderr)
+        sys.exit(1)
+
+    os.chdir(str(root))
+    server = create_server(str(root))
     server.run()
 
 
