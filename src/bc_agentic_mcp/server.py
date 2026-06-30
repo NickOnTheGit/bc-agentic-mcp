@@ -1,11 +1,21 @@
 """BC Agentic MCP Server — main entry point with infrastructure wiring.
 
+Target protocol: MCP 2026-07-28. Current FastMCP version may lag.
+
+Migration checklist for full 2026-07-28 compliance:
+  1. server/discover RPC handler (list all tools in discover format)
+  2. Mcp-Method / Mcp-Name headers on every response
+  3. Error code migration from -32002 to -32602
+  4. Streamable HTTP transport support (SSE-based)
+  5. ttlMs and cacheScope metadata in tools/list response
+
 Infrastructure lifecycle:
   1. Config loaded (ServerConfig)
   2. Rate limiter instantiated per-session
   3. Audit logger instantiated (writes to .specs/.audit/)
   4. AL tool discovered (graceful degradation)
   5. All 16 tools registered with rate-limit + audit wrappers
+  6. Tool integrity verification (hash-pinning, GAP 7)
 """
 import argparse
 import inspect
@@ -17,6 +27,7 @@ from typing import Any, Dict, List, Optional
 
 from mcp.server.fastmcp import FastMCP
 
+from bc_agentic_mcp import __version__
 from bc_agentic_mcp.config import ServerConfig, discover_al_tool, discover_app_json
 from bc_agentic_mcp.rate_limiter import RateLimiter
 from bc_agentic_mcp.audit import AuditLogger
@@ -101,6 +112,38 @@ async def _run_tool(name: str, handler, session_id: str = "default", **kwargs) -
             f"Internal error in {name}: {e}",
             hint="Retry the operation. If the error persists, report it.",
             retry_after=10,
+        )
+
+
+# ---------------------------------------------------------------------------
+# Tool integrity verification (GAP 7)
+# ---------------------------------------------------------------------------
+
+
+def _verify_tool_integrity(mcp: FastMCP, specs_dir: Path) -> None:
+    """Verify tool definitions haven't changed and save updated manifest."""
+    try:
+        from bc_agentic_mcp.tool_defense import verify_manifest, save_manifest
+
+        all_tools = [t for t in mcp._tool_manager._tools.values()]
+        tool_defs = [
+            {"name": t.name, "description": t.description, "inputSchema": t.parameters}
+            for t in all_tools
+        ]
+        integrity_dir = specs_dir / ".integrity"
+        results = verify_manifest(integrity_dir, tool_defs)
+        changed = {k: v for k, v in results.items() if v == "changed"}
+        if changed:
+            print(
+                f"WARNING: {len(changed)} tool definitions changed since last approval: "
+                f"{list(changed.keys())}",
+                file=sys.stderr,
+            )
+        save_manifest(integrity_dir, tool_defs)
+    except Exception as e:
+        print(
+            f"WARNING: Tool integrity verification failed (non-blocking): {e}",
+            file=sys.stderr,
         )
 
 
@@ -377,6 +420,18 @@ def create_server(project_root: Optional[str] = None) -> FastMCP:
             spec_name=spec_name,
             outcome=outcome,
         )
+
+    # -------------------------------------------------------------------
+    # GAP 8: Health check (for Docker/K8s liveness probes)
+    # -------------------------------------------------------------------
+    @mcp.tool(name="_health")
+    async def _health() -> Dict[str, Any]:
+        return {"status": "ok", "version": __version__}
+
+    # -------------------------------------------------------------------
+    # GAP 7: Tool integrity verification (hash-pinning)
+    # -------------------------------------------------------------------
+    _verify_tool_integrity(mcp, specs_dir)
 
     return mcp
 

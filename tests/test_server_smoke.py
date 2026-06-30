@@ -38,9 +38,10 @@ def test_all_sixteen_tools_registered():
         "bc_quality_check",
         "bc_feedback",
         "bc_archive",
+        "_health",
     }
     assert expected <= tool_names
-    assert len(tool_names) == 16
+    assert len(tool_names) == 17
 
 
 @pytest.mark.asyncio
