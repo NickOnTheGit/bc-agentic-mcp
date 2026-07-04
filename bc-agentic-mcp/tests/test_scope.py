@@ -69,3 +69,42 @@ def test_check_create_allows_when_no_extensions_declared():
         root.mkdir()
         enf = ScopeEnforcer(allowed_files=[], project_root=root, allowed_extensions=[])
         assert enf.check_create("src/Anything.al") is True
+
+
+def test_check_create_requires_allowed_file_when_declared():
+    with tempfile.TemporaryDirectory() as d:
+        root = Path(d) / "proj"
+        root.mkdir()
+        enf = ScopeEnforcer(
+            allowed_files=["src/Allowed.Codeunit.al"],
+            project_root=root,
+            allowed_extensions=["src"],
+        )
+        assert enf.check_create("src/Allowed.Codeunit.al") is True
+        assert enf.check_create("src/Other.Codeunit.al") is False
+
+
+def test_permissive_mode_allows_write_in_allowed_extension():
+    with tempfile.TemporaryDirectory() as d:
+        root = Path(d) / "proj"
+        root.mkdir()
+        enf = ScopeEnforcer(
+            allowed_files=["src/Allowed.Codeunit.al"],
+            project_root=root,
+            allowed_extensions=["src"],
+            scope_mode="permissive",
+        )
+        assert enf.check_write("src/Other.Codeunit.al") is True
+
+
+def test_permissive_mode_still_blocks_disallowed_extension():
+    with tempfile.TemporaryDirectory() as d:
+        root = Path(d) / "proj"
+        root.mkdir()
+        enf = ScopeEnforcer(
+            allowed_files=["src/Allowed.Codeunit.al"],
+            project_root=root,
+            allowed_extensions=["src"],
+            scope_mode="permissive",
+        )
+        assert enf.check_create("other/Any.Codeunit.al") is False

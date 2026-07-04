@@ -48,3 +48,50 @@ def validate_idempotency_key(key: str) -> None:
         raise ValueError("idempotency_key is required")
     if len(key) > MAX_IDEMPOTENCY_KEY_LEN:
         raise ValueError(f"idempotency_key max {MAX_IDEMPOTENCY_KEY_LEN} chars, got {len(key)}")
+
+
+# --- Poka-yoke enums (F1): loose strings are refused at the tool boundary so a typo
+# can never silently record the wrong evidence class. ---
+
+VALID_VALIDATION_MODES = {"item", "regression"}
+
+# Canonical evidence-tier layer names accepted by the verification ladder.
+VALID_EVIDENCE_LAYERS = {
+    "", "heuristic", "static", "claim", "claimed",
+    "empiric-compile", "compile",
+    "al-unit", "al-regression", "unit", "integration",
+    "empiric-runtime", "runtime", "api", "e2e",
+}
+
+
+def validate_validation_mode(mode: str) -> str:
+    """Validate and normalize a validation mode. Returns the normalized value."""
+    normalized = str(mode or "item").strip().lower()
+    if normalized not in VALID_VALIDATION_MODES:
+        raise ValueError(
+            f"validation_mode '{mode}' must be one of: {', '.join(sorted(VALID_VALIDATION_MODES))}"
+        )
+    return normalized
+
+
+def validate_evidence_layer(layer: str) -> str:
+    """Validate and normalize an evidence layer name. Returns the normalized value."""
+    normalized = str(layer or "").strip().lower()
+    if normalized not in VALID_EVIDENCE_LAYERS:
+        raise ValueError(
+            f"layer '{layer}' must be one of: {', '.join(sorted(v for v in VALID_EVIDENCE_LAYERS if v))} (or empty)"
+        )
+    return normalized
+
+
+def validate_covers(covers) -> None:
+    """Validate a coverage declaration: 'all' or a non-empty list of positive ints."""
+    if covers == "all":
+        return
+    if isinstance(covers, list) and covers and all(
+        isinstance(i, int) and i >= 1 for i in covers
+    ):
+        return
+    raise ValueError(
+        "covers must be the string 'all' or a non-empty list of 1-based acceptance-criterion indexes"
+    )

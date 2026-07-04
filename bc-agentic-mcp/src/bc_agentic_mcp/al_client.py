@@ -20,7 +20,8 @@ class CompileResult:
 def _run_altool(cmd: List[str], timeout: int = 120) -> subprocess.CompletedProcess:
     """Run altool with consistent error handling."""
     try:
-        return subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
+        return subprocess.run(cmd, capture_output=True, text=True, timeout=timeout,
+                              stdin=subprocess.DEVNULL)
     except FileNotFoundError:
         raise MCPError(
             ErrorCode.EXTERNAL_ERROR,

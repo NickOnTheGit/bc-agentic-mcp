@@ -48,7 +48,7 @@ async def test_full_pipeline(al_project):
     spec = await handle_write_spec(
         project_root=root,
         spec_name=spec_name,
-        human_bullets="- Add mutation date to rental",
+        human_bullets="Add field MutationDate to table Rental (id 50000)",
         idempotency_key="k-001",
     )
     assert Path(spec["tdd_path"]).exists()
@@ -58,7 +58,7 @@ async def test_full_pipeline(al_project):
     spec2 = await handle_write_spec(
         project_root=root,
         spec_name=spec_name,
-        human_bullets="- Add mutation date to rental",
+        human_bullets="Add field MutationDate to table Rental (id 50000)",
         idempotency_key="k-001",
     )
     assert "idempotent" in spec2["summary"]["status"]

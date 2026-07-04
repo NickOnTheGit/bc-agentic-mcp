@@ -122,7 +122,7 @@ async def test_handle_implement_ready_for_model_when_not_dry():
 
 @pytest.mark.asyncio
 async def test_handle_implement_without_tasks_returns_no_results():
-    """No task_ids should produce zero executed tasks."""
+    """No task_ids should be blocked with explicit guidance."""
     with tempfile.TemporaryDirectory() as d:
         root = Path(d)
         specs_dir = root / ".specs" / "test-feature"
@@ -135,6 +135,7 @@ async def test_handle_implement_without_tasks_returns_no_results():
             spec_name="test-feature",
             task_ids=[],
         )
+        assert result["status"] == "blocked_no_tasks_selected"
         assert result["tasks_executed"] == 0
 
 
@@ -164,9 +165,16 @@ def test_update_tasks_md_marks_failed():
 class TestPhase2CodeExecution:
     """Tests for Phase 2 of bc_implement (code execution path)."""
 
+    @staticmethod
+    def _approve(root, spec="test-spec", phase="tasks"):
+        d = Path(root) / ".specs" / spec / "approvals"
+        d.mkdir(parents=True, exist_ok=True)
+        (d / f"{phase}.md").write_text("**Status:** approve\n", encoding="utf-8")
+
     @pytest.mark.asyncio
     async def test_phase2_with_valid_code_writes_file(self, spec_project_with_al):
         """Providing code to bc_implement should write the file with no crash."""
+        self._approve(spec_project_with_al)
         result = await handle_implement(
             project_root=str(spec_project_with_al),
             spec_name="test-spec",
@@ -181,8 +189,22 @@ class TestPhase2CodeExecution:
         assert target.exists()
 
     @pytest.mark.asyncio
+    async def test_phase2_blocked_without_approval(self, spec_project_with_al):
+        """Poka-yoke: without an approved decision, Phase 2 must refuse to write."""
+        result = await handle_implement(
+            project_root=str(spec_project_with_al),
+            spec_name="test-spec",
+            code='table 50000 "TestTable" { }',
+            file_path="src/Tables/TestTable.Table.al",
+            attempt=1,
+        )
+        assert result.get("status") == "blocked_needs_approval"
+        assert not (spec_project_with_al / "src/Tables/TestTable.Table.al").exists()
+
+    @pytest.mark.asyncio
     async def test_phase2_scope_violation_rejected(self, spec_project):
         """Code targeting a file outside scope must be rejected."""
+        self._approve(spec_project)
         result = await handle_implement(
             project_root=str(spec_project),
             spec_name="test-spec",
@@ -191,6 +213,32 @@ class TestPhase2CodeExecution:
             attempt=1,
         )
         assert result.get("status") in ("scope_violation", "rejected")
+
+    @pytest.mark.asyncio
+    async def test_phase2_create_rejects_file_not_in_allowed_files(self):
+        """Create writes must honor explicit allowed_files as a strict allowlist."""
+        with tempfile.TemporaryDirectory() as d:
+            root = Path(d)
+            specs_dir = root / ".specs" / "test-spec"
+            specs_dir.mkdir(parents=True)
+            spec = {
+                "spec_name": "test-spec",
+                "scope_boundaries": {
+                    "allowed_extensions": ["src"],
+                    "allowed_files": ["src/Tables/OnlyAllowed.Table.al"],
+                },
+            }
+            (specs_dir / "spec.json").write_text(json.dumps(spec))
+            (specs_dir / "TASKS.md").write_text("# Tasks\n- [ ] T-001 Implement something\n")
+            self._approve(root)
+            result = await handle_implement(
+                project_root=str(root),
+                spec_name="test-spec",
+                code='table 50000 "OtherTable" { }',
+                file_path="src/Tables/OtherTable.Table.al",
+                attempt=1,
+            )
+            assert result.get("status") in ("scope_violation", "rejected")
 
     @pytest.mark.asyncio
     async def test_phase2_missing_file_path_rejected(self, spec_project):
@@ -213,3 +261,45 @@ class TestPhase2CodeExecution:
         )
         assert result["tasks_executed"] == 1
         assert result["results"][0]["status"] == "ready_for_model"
+
+    @pytest.mark.asyncio
+    async def test_phase2_upgrade_contract_blocks_missing_scope_or_tag(self):
+        """Upgrade-target writes must satisfy required trigger scope and idempotency tag."""
+        with tempfile.TemporaryDirectory() as d:
+            root = Path(d)
+            specs_dir = root / ".specs" / "test-spec"
+            specs_dir.mkdir(parents=True)
+            spec = {
+                "spec_name": "test-spec",
+                "scope_boundaries": {
+                    "allowed_extensions": ["src"],
+                    "allowed_files": ["src/_Upgrade/MyUpgrade.Codeunit.al"],
+                    "scope_mode": "strict",
+                },
+                "objects_to_create": [
+                    {
+                        "type": "Codeunit",
+                        "name": "MyUpgrade",
+                        "subtype": "upgrade",
+                        "target": "src/_Upgrade/MyUpgrade.Codeunit.al",
+                    }
+                ],
+                "upgrade_contract": {
+                    "table_target": "src/Tables/My.Table.al",
+                    "data_per_company": False,
+                    "required_scope": "per-database",
+                    "idempotency_tag": "my_upgrade_tag_v1",
+                },
+            }
+            (specs_dir / "spec.json").write_text(json.dumps(spec))
+            (specs_dir / "TASKS.md").write_text("# Tasks\n- [ ] T-001 Implement upgrade\n")
+            self._approve(root)
+
+            result = await handle_implement(
+                project_root=str(root),
+                spec_name="test-spec",
+                code='codeunit 50100 "MyUpgrade" { trigger UpgradePerCompanySAN() begin end; }',
+                file_path="src/_Upgrade/MyUpgrade.Codeunit.al",
+                attempt=1,
+            )
+            assert result.get("status") == "blocked_upgrade_contract"

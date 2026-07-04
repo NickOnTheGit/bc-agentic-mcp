@@ -40,3 +40,73 @@ async def test_converge_reports_missing_when_not_implemented():
         result = await handle_converge(str(root), "test-feature")
         assert result["converged"] is False
         assert "Table MyTable" in result["missing"]
+
+
+@pytest.mark.asyncio
+async def test_converge_checks_declared_modify_target_and_field_presence():
+    """Declared modify target should be validated for required data_model fields."""
+    with tempfile.TemporaryDirectory() as d:
+        root = Path(d)
+        target_dir = root / "extensions" / "BaseApp" / "src"
+        target_dir.mkdir(parents=True)
+        target_file = target_dir / "Sample.Table.al"
+        target_file.write_text(
+            'table 50000 "Sample" { fields { field(1; Code; Code[20]) { } } }',
+            encoding="utf-8",
+        )
+
+        specs_dir = root / ".specs" / "test-feature"
+        specs_dir.mkdir(parents=True)
+        spec = {
+            "spec_name": "test-feature",
+            "objects_to_create": [],
+            "objects_to_modify": [
+                {
+                    "type": "Table",
+                    "name": "Sample",
+                    "target": "extensions/BaseApp/src/Sample.Table.al",
+                }
+            ],
+            "data_model": [{"field": "Facility Code Filter", "al_type": "Code[250]"}],
+        }
+        (specs_dir / "spec.json").write_text(json.dumps(spec), encoding="utf-8")
+
+        result = await handle_converge(str(root), "test-feature")
+        assert result["converged"] is False
+        assert any("Facility Code Filter" in item for item in result["missing"])
+
+
+@pytest.mark.asyncio
+async def test_converge_passes_when_modify_target_contains_required_field():
+    with tempfile.TemporaryDirectory() as d:
+        root = Path(d)
+        target_dir = root / "extensions" / "BaseApp" / "src"
+        target_dir.mkdir(parents=True)
+        target_file = target_dir / "Sample.Table.al"
+        target_file.write_text(
+            (
+                'table 50000 "Sample" { fields { '
+                'field(1; Code; Code[20]) { } '
+                'field(2; FacilityCodeFilter; Code[250]) { } } }'
+            ),
+            encoding="utf-8",
+        )
+
+        specs_dir = root / ".specs" / "test-feature"
+        specs_dir.mkdir(parents=True)
+        spec = {
+            "spec_name": "test-feature",
+            "objects_to_create": [],
+            "objects_to_modify": [
+                {
+                    "type": "Table",
+                    "name": "Sample",
+                    "target": "extensions/BaseApp/src/Sample.Table.al",
+                }
+            ],
+            "data_model": [{"field": "Facility Code Filter", "al_type": "Code[250]"}],
+        }
+        (specs_dir / "spec.json").write_text(json.dumps(spec), encoding="utf-8")
+
+        result = await handle_converge(str(root), "test-feature")
+        assert result["converged"] is True

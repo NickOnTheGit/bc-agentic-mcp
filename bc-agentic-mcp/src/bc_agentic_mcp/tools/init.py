@@ -1,6 +1,7 @@
 """bc_init tool — creates .specs/ structure. See spec Section 3.1."""
 import json
 from pathlib import Path
+from bc_agentic_mcp.workspace import specs_root
 from typing import Dict, Any, Optional
 
 from bc_agentic_mcp.state import StateManager
@@ -26,7 +27,7 @@ async def handle_init(
 ) -> Dict[str, Any]:
     """Initialize .specs/ directory structure for the BC project."""
     root = Path(project_root).resolve()
-    specs_dir = root / ".specs"
+    specs_dir = specs_root(root)
     specs_dir.mkdir(parents=True, exist_ok=True)
 
     # State file

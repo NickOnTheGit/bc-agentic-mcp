@@ -1,0 +1,39 @@
+flowchart TD
+    A([Start]) --> B[Capture Item Context]
+    B --> C[Prepare Review]
+
+    C --> D{Clarification needed?}
+    D -->|Yes| E[Clarify + Answer]
+    E --> C
+    D -->|No| F[Write Spec]
+
+    F --> G[Plan Design]
+    G --> H[Read Code Context]
+    H --> I[Breakdown Tasks]
+    I --> J[Ready for Review]
+    J --> K[Request Approval]
+    K --> L[Submit Decision]
+
+    L -->|Reject / Request Changes| C
+    L -->|Approve| M[Implement]
+
+    M --> N{Implementation gates pass?}
+    N -->|No| O[Blocked or Failed: approval fresh-review spec scope compile]
+    O --> C
+    N -->|Yes| P[Generate Tests]
+
+    P --> Q[Run Tests]
+    Q --> R[Verify]
+    R --> S[Review / Detect / Reflect]
+    S --> T[Archive]
+    T --> U([End])
+
+    classDef startEnd fill:#0b3d91,color:#fff,stroke:#082c6c,stroke-width:1px;
+    classDef process fill:#eef4ff,stroke:#7ea2e3,color:#0b1f44;
+    classDef decision fill:#fff7e6,stroke:#d9a441,color:#5a3c00;
+    classDef blocked fill:#ffecec,stroke:#d35b5b,color:#611a1a;
+
+    class A,U startEnd;
+    class B,C,E,F,G,H,I,J,K,L,M,P,Q,R,S,T process;
+    class D,N decision;
+    class O blocked;

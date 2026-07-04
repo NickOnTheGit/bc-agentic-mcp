@@ -10,11 +10,18 @@ Phase 2 (code is provided): code execution.
   Supports compile-and-fix loop (max 3 attempts).
 """
 from pathlib import Path
+from bc_agentic_mcp.workspace import specs_root
 from typing import Dict, Any, List, Optional
+import re
 
 from bc_agentic_mcp.errors import MCPError, ErrorCode
 from bc_agentic_mcp.scope import ScopeEnforcer
-from bc_agentic_mcp.spec_loader import load_spec
+from bc_agentic_mcp.spec_loader import (
+    load_spec,
+    upgrade_contract_for_file,
+    validate_upgrade_code_against_contract,
+)
+from bc_agentic_mcp import authorization
 
 
 # ---------------------------------------------------------------------------
@@ -58,7 +65,20 @@ def _write_al_file(
                            hint="Expand scope boundaries or choose a file in an allowed extension.")
 
     target.parent.mkdir(parents=True, exist_ok=True)
-    target.write_text(content, encoding="utf-8")
+    # Line-ending discipline: write_text without newline= lets Python translate
+    # '\n' -> os.linesep, so CRLF input becomes \r\r\n (observed live: wi267598
+    # commit showed a 484-line rewrite for a 20-line change). Normalize to the
+    # file's EXISTING convention (LF for new files — the ERP repo standard) and
+    # write untranslated.
+    normalized = content.replace("\r\n", "\n").replace("\r", "\n")
+    if target.exists():
+        try:
+            existing = target.read_bytes()
+            if b"\r\n" in existing and b"\r\r\n" not in existing:
+                normalized = normalized.replace("\n", "\r\n")
+        except OSError:
+            pass
+    target.write_text(normalized, encoding="utf-8", newline="")
     return target
 
 
@@ -110,6 +130,43 @@ def _update_tasks_md(specs_dir: Path, task_ids: Optional[List[str]], failed: boo
     tasks_path.write_text(content, encoding="utf-8")
 
 
+_IFACE_DECL_RE = re.compile(r"\b(\w+)\s*:\s*Interface\s+(\w+)\s*;", re.IGNORECASE)
+_IFACE_PROC_RE = re.compile(r"procedure\s+(\w+)", re.IGNORECASE)
+
+
+def _interface_call_issues(root: Path, code: str) -> List[str]:
+    """AL0132 pre-check: calls through `Interface X` vars must be members of X.
+
+    Uses the persistent object index (interfaces carry their procedure list); a
+    24h-old index is fine — interface members change rarely, and a false negative
+    just falls through to the real compiler.
+    """
+    decls = {var: iface for var, iface in _IFACE_DECL_RE.findall(code)}
+    if not decls:
+        return []
+    try:
+        from bc_agentic_mcp import object_index
+        objects = object_index.refresh(Path(root).resolve(), max_age_seconds=86400)["objects"]
+    except Exception:
+        return []  # index unavailable: leave it to the compiler
+    issues: List[str] = []
+    for var, iface in decls.items():
+        entry = objects.get(iface.lower())
+        if not entry or entry.get("kind") != "interface":
+            continue  # unknown interface (dependency symbol) — compiler decides
+        members = {m.group(1).lower() for p in (entry.get("detail", {}).get("procedures") or [])
+                   for m in [_IFACE_PROC_RE.search(str(p))] if m}
+        if not members:
+            continue
+        for call in re.finditer(rf"\b{re.escape(var)}\.(\w+)\s*\(", code):
+            method = call.group(1)
+            if method.lower() not in members:
+                issues.append(
+                    f"'{var}.{method}()' is not a member of interface {iface} "
+                    f"(members: {', '.join(sorted(members))})")
+    return issues
+
+
 # ---------------------------------------------------------------------------
 # Altool path helper (lazy import to avoid circular dependency)
 # ---------------------------------------------------------------------------
@@ -122,6 +179,41 @@ def _get_altool_path() -> Optional[Path]:
         return _get_ctx().config.al_tool.altool_path
     except (AssertionError, ImportError, AttributeError):
         return None
+
+
+def _persist_quality(specs_dir: Path, errors: List[Dict[str, Any]], warnings: List[Dict[str, Any]],
+                     mode: str, analyzers: List[str]) -> None:
+    """Persist a quality snapshot from the REAL compile so the commit gate (F1) can verify it."""
+    try:
+        import hashlib as _h
+        import json as _json
+        from datetime import datetime, timezone
+        spec_file = specs_dir / "spec.json"
+        spec_sha = _h.sha256(spec_file.read_bytes()).hexdigest() if spec_file.exists() else None
+        (specs_dir / "quality.json").write_text(_json.dumps({
+            "generated_at": datetime.now(timezone.utc).isoformat(),
+            "mode": mode, "errors": len(errors), "warnings": len(warnings),
+            "analyzers": analyzers, "spec_sha": spec_sha,
+        }, indent=2), encoding="utf-8")
+    except Exception:
+        pass
+
+
+def _split_diagnostics_by_file(
+    diagnostics: List[Dict[str, Any]],
+    file_path: str,
+) -> Dict[str, List[Dict[str, Any]]]:
+    """Split diagnostics between changed-file and baseline diagnostics."""
+    expected = str(file_path).replace("\\", "/").lower()
+    changed: List[Dict[str, Any]] = []
+    baseline: List[Dict[str, Any]] = []
+    for d in diagnostics:
+        src = str(((d.get("sourceLocation") or {}).get("file") or "")).replace("\\", "/").lower()
+        if src.endswith(expected) or src == expected:
+            changed.append(d)
+        else:
+            baseline.append(d)
+    return {"changed": changed, "baseline": baseline}
 
 
 # ---------------------------------------------------------------------------
@@ -146,7 +238,7 @@ async def handle_implement(
     Phase 2 (code is provided): write file, compile, return diagnostics.
     """
     root = Path(project_root).resolve()
-    specs_dir = root / ".specs" / spec_name
+    specs_dir = specs_root(root) / spec_name
 
     spec = load_spec(specs_dir)
 
@@ -155,6 +247,7 @@ async def handle_implement(
         allowed_files=scope_boundaries.get("allowed_files", []),
         project_root=root,
         allowed_extensions=scope_boundaries.get("allowed_extensions", []),
+        scope_mode=scope_boundaries.get("scope_mode", "strict"),
     )
 
     # ------------------------------------------------------------------
@@ -168,6 +261,60 @@ async def handle_implement(
                 "message": "file_path is required when code is provided",
             }
 
+        # Poka-yoke (Layer 2): refuse to write implementation code before human approval.
+        if not authorization.implementation_authorized(root, spec_name):
+            return {
+                "status": "blocked_needs_approval",
+                "file": file_path,
+                "message": (
+                    "Implementation is not authorized: no approved decision for a gating phase "
+                    "(tasks/implement/complete). Run bc_request_approval -> human bc_submit_decision "
+                    "(approve) before writing code. This is the sanctioned write path; do not edit "
+                    "spec-scoped files with other tools."
+                ),
+            }
+
+        fresh_review, freshness_reason = authorization.review_is_fresh(root, spec_name)
+        if not fresh_review:
+            return {
+                "status": "blocked_needs_fresh_review",
+                "file": file_path,
+                "message": (
+                    "Implementation is blocked until a fresh review packet exists. "
+                    "Run bc_prepare_review for this spec, ensure quality_gate.json pass=true, "
+                    "and then request/approve the tasks phase again."
+                ),
+                "reason": freshness_reason,
+            }
+
+        governed, upgrade_contract = upgrade_contract_for_file(spec, file_path)
+        if governed:
+            contract_issues = validate_upgrade_code_against_contract(code, upgrade_contract)
+            if contract_issues:
+                return {
+                    "status": "blocked_upgrade_contract",
+                    "file": file_path,
+                    "message": "Upgrade safety contract failed",
+                    "issues": contract_issues,
+                    "required_scope": upgrade_contract.get("required_scope"),
+                    "required_tag": upgrade_contract.get("idempotency_tag"),
+                }
+
+        # INTERFACE TRUTH (AL0132 class): every `Var.Method()` call through a declared
+        # `Interface X` variable must name a member X actually declares — verified
+        # against the object index BEFORE paying the container compile (observed live:
+        # IsActive() called via FeatureV3SAN, which does not declare it).
+        iface_issues = _interface_call_issues(root, code)
+        if iface_issues:
+            return {
+                "status": "blocked_interface_contract",
+                "file": file_path,
+                "message": "Interface-member check failed (would be AL0132 in the container)",
+                "issues": iface_issues,
+                "hint": ("Read the interface definition and call only its members; call "
+                         "implementation-specific procedures on the concrete codeunit instead."),
+            }
+
         # Write file with scope validation
         try:
             _write_al_file(root, scope, file_path, code)
@@ -178,17 +325,131 @@ async def handle_implement(
                 "hint": e.hint,
             }
 
-        # Attempt compile
+        # Attempt compile — prefer the REAL AL compiler (alc.exe) on the written file's extension.
+        from bc_agentic_mcp import al_compiler
+        comp = al_compiler.compile_project(str(root / file_path))
+        if comp.get("available"):
+            c_errors = [d for d in comp["diagnostics"] if d.get("severity") == "error"]
+            c_warnings = [d for d in comp["diagnostics"] if d.get("severity") == "warning"]
+            # The quality snapshot must record the CHANGED-FILE judgment, not the raw
+            # project-wide count: persisting 68k baseline errors (package-cache noise,
+            # pre-existing issues) made the commit gate refuse a change the tool itself
+            # had judged clean (changed_file_error_count == 0). Baseline noise belongs
+            # in the response detail, never in the gate's pass/fail number.
+            _scoped = _split_diagnostics_by_file(c_errors, file_path)
+            _persist_quality(specs_dir, _scoped["changed"], c_warnings, "compiler",
+                             comp.get("analyzers", []))
+            if comp.get("success"):
+                _update_tasks_md(specs_dir, task_ids)
+                return {
+                    "status": "completed", "file": file_path, "mode": "compiler",
+                    "project": comp.get("project"),
+                    "compile_result": {"success": True, "error_count": len(c_errors),
+                                       "warning_count": len(c_warnings)},
+                }
+            split = _split_diagnostics_by_file(c_errors, file_path)
+            changed_errors = split["changed"]
+            baseline_errors = split["baseline"]
+            if not changed_errors:
+                _update_tasks_md(specs_dir, task_ids)
+                return {
+                    "status": "completed_with_baseline_noise",
+                    "file": file_path,
+                    "mode": "compiler",
+                    "project": comp.get("project"),
+                    "compile_result": {
+                        "success": False,
+                        "error_count": len(c_errors),
+                        "warning_count": len(c_warnings),
+                        "changed_file_error_count": 0,
+                        "baseline_error_count": len(baseline_errors),
+                    },
+                    "baseline_diagnostics": baseline_errors[:50],
+                    "message": "Changed file has no compile errors; build failed due to baseline project errors.",
+                }
+            if attempt < 3:
+                return {
+                    "status": "compile_failed", "file": file_path, "mode": "compiler",
+                    "diagnostics": changed_errors,
+                    "baseline_error_count": len(baseline_errors),
+                    "attempt": attempt, "retry": True,
+                    "guidance": "Fix the errors below and call bc_implement again with attempt+1",
+                }
+            _update_tasks_md(specs_dir, task_ids, failed=True)
+            return {
+                "status": "failed_after_retries", "file": file_path, "mode": "compiler",
+                "diagnostics": changed_errors or c_errors,
+                "baseline_error_count": len(baseline_errors),
+                "human_action_required": "Review errors manually",
+            }
+
+        # Fallback: legacy altool (fictional) or self-contained regex validation.
         altool_path = _get_altool_path()
         if altool_path is None:
+            # Self-contained validation — no external toolchain required.
+            from bc_agentic_mcp.al_validator import validate_project
+
+            diagnostics = validate_project(root)
+            errors = [d for d in diagnostics if d.get("severity") == "error"]
+            warnings = [d for d in diagnostics if d.get("severity") == "warning"]
+            _persist_quality(specs_dir, errors, warnings, "self-contained", ["regex"])
+            if not errors:
+                _update_tasks_md(specs_dir, task_ids)
+                return {
+                    "status": "completed",
+                    "file": file_path,
+                    "mode": "self-contained",
+                    "compile_result": {
+                        "success": True,
+                        "error_count": 0,
+                        "warning_count": len([d for d in diagnostics if d.get("severity") == "warning"]),
+                    },
+                }
+            split = _split_diagnostics_by_file(errors, file_path)
+            changed_errors = split["changed"]
+            baseline_errors = split["baseline"]
+            if not changed_errors:
+                _update_tasks_md(specs_dir, task_ids)
+                return {
+                    "status": "completed_with_baseline_noise",
+                    "file": file_path,
+                    "mode": "self-contained",
+                    "compile_result": {
+                        "success": False,
+                        "error_count": len(errors),
+                        "warning_count": len(warnings),
+                        "changed_file_error_count": 0,
+                        "baseline_error_count": len(baseline_errors),
+                    },
+                    "baseline_diagnostics": baseline_errors[:50],
+                    "message": "Changed file has no compile errors; validation failed due to baseline project errors.",
+                }
+            if attempt < 3:
+                return {
+                    "status": "compile_failed",
+                    "file": file_path,
+                    "mode": "self-contained",
+                    "diagnostics": changed_errors,
+                    "baseline_error_count": len(baseline_errors),
+                    "attempt": attempt,
+                    "retry": True,
+                    "guidance": "Fix the errors below and call bc_implement again with attempt+1",
+                }
+            _update_tasks_md(specs_dir, task_ids, failed=True)
             return {
-                "status": "written_no_compile",
+                "status": "failed_after_retries",
                 "file": file_path,
-                "message": "File written but cannot compile — AL MCP Server not available",
+                "mode": "self-contained",
+                "diagnostics": changed_errors or errors,
+                "baseline_error_count": len(baseline_errors),
+                "human_action_required": "Review errors manually",
             }
 
         from bc_agentic_mcp.al_client import compile_extension
         compile_result = compile_extension(altool_path, root)
+        c_errors = [d for d in compile_result.diagnostics if d.get("severity") == "error"]
+        c_warnings = [d for d in compile_result.diagnostics if d.get("severity") == "warning"]
+        _persist_quality(specs_dir, c_errors, c_warnings, "altool", ["legacy"])
 
         if compile_result.success:
             _update_tasks_md(specs_dir, task_ids)
@@ -201,27 +462,56 @@ async def handle_implement(
                     "warning_count": compile_result.warning_count,
                 },
             }
-        elif attempt < 3:
+        split = _split_diagnostics_by_file(c_errors, file_path)
+        changed_errors = split["changed"]
+        baseline_errors = split["baseline"]
+        if not changed_errors:
+            _update_tasks_md(specs_dir, task_ids)
+            return {
+                "status": "completed_with_baseline_noise",
+                "file": file_path,
+                "mode": "altool",
+                "compile_result": {
+                    "success": False,
+                    "error_count": len(c_errors),
+                    "warning_count": len(c_warnings),
+                    "changed_file_error_count": 0,
+                    "baseline_error_count": len(baseline_errors),
+                },
+                "baseline_diagnostics": baseline_errors[:50],
+                "message": "Changed file has no compile errors; build failed due to baseline project errors.",
+            }
+        if attempt < 3:
             return {
                 "status": "compile_failed",
                 "file": file_path,
-                "diagnostics": [d for d in compile_result.diagnostics if d.get("severity") == "error"],
+                "diagnostics": changed_errors,
+                "baseline_error_count": len(baseline_errors),
                 "attempt": attempt,
                 "retry": True,
                 "guidance": "Fix the errors below and call bc_implement again with attempt+1",
             }
-        else:
-            _update_tasks_md(specs_dir, task_ids, failed=True)
-            return {
-                "status": "failed_after_retries",
-                "file": file_path,
-                "diagnostics": [d for d in compile_result.diagnostics if d.get("severity") == "error"],
-                "human_action_required": "Review errors manually",
-            }
+        _update_tasks_md(specs_dir, task_ids, failed=True)
+        return {
+            "status": "failed_after_retries",
+            "file": file_path,
+            "diagnostics": changed_errors or c_errors,
+            "baseline_error_count": len(baseline_errors),
+            "human_action_required": "Review errors manually",
+        }
 
     # ------------------------------------------------------------------
     # Phase 1: context preparation (unchanged from V1)
     # ------------------------------------------------------------------
+    if not task_ids:
+        return {
+            "status": "blocked_no_tasks_selected",
+            "spec_name": spec_name,
+            "tasks_executed": 0,
+            "results": [],
+            "message": "No task_ids were provided. Select at least one task from TASKS.md.",
+        }
+
     results: List[Dict[str, Any]] = []
 
     for task_id in task_ids or []:
@@ -235,6 +525,185 @@ async def handle_implement(
         "tasks_executed": len(results),
         "results": results,
     }
+
+
+# ---------------------------------------------------------------------------
+# F2: single-behavior tools. bc_implement silently switched between context-prep
+# and code-write on a parameter; these two names each do exactly one thing.
+# bc_implement stays as a deprecated alias for one release.
+# ---------------------------------------------------------------------------
+
+async def handle_implement_context(
+    project_root: str,
+    spec_name: str,
+    task_ids: Optional[List[str]] = None,
+    mode: str = "auto",
+    dry_run: bool = False,
+) -> Dict[str, Any]:
+    """Prepare task context for the model. Never writes code (poka-yoke by shape)."""
+    return await handle_implement(
+        project_root, spec_name, task_ids=task_ids, mode=mode, dry_run=dry_run,
+    )
+
+
+async def handle_implement_write(
+    project_root: str,
+    spec_name: str,
+    code: str,
+    file_path: str,
+    task_ids: Optional[List[str]] = None,
+    attempt: int = 1,
+    previous_diagnostics: Optional[str] = None,
+) -> Dict[str, Any]:
+    """Write one AL file and compile it. ``code`` + ``file_path`` are REQUIRED here —
+    the accidental context-prep fallback of the dual-behavior tool cannot happen."""
+    if not code or not str(code).strip():
+        raise MCPError(ErrorCode.CLIENT_ERROR, "code is required for bc_implement_write",
+                       hint="Use bc_implement_context to prepare task context.")
+    if not file_path or not str(file_path).strip():
+        raise MCPError(ErrorCode.CLIENT_ERROR, "file_path is required for bc_implement_write",
+                       hint="Provide the workspace-relative AL file path to write.")
+    return await handle_implement(
+        project_root, spec_name, task_ids=task_ids, code=code, file_path=file_path,
+        attempt=attempt, previous_diagnostics=previous_diagnostics,
+    )
+
+
+async def handle_implement_alias(**kwargs: Any) -> Dict[str, Any]:
+    """Deprecated dual-behavior entry point; stamps a deprecation notice on results."""
+    result = await handle_implement(**kwargs)
+    if isinstance(result, dict):
+        result.setdefault(
+            "deprecation",
+            "bc_implement is deprecated: use bc_implement_context (prep) or "
+            "bc_implement_write (write+compile).",
+        )
+    return result
+
+
+async def handle_implement_delete(
+    project_root: str,
+    spec_name: str,
+    file_path: str,
+    task_ids: Optional[List[str]] = None,
+) -> Dict[str, Any]:
+    """Delete one spec-scoped AL file — the decommission twin of bc_implement_write.
+
+    Same walls as the write path (approval gate, fresh review, scope), plus one more:
+    the CHARTERED SPEC must explicitly order this file's removal (an objects_to_modify
+    entry whose change starts with 'Remove' targeting exactly this path) — ad-hoc
+    deletion through the fenced path is impossible. The file content is backed up to
+    .specs/<spec>/deleted/ before removal (reversible without git), and the containing
+    AL project is recompiled afterwards so dangling references surface immediately.
+    """
+    if not file_path or not str(file_path).strip():
+        raise MCPError(ErrorCode.CLIENT_ERROR, "file_path is required for bc_implement_delete",
+                       hint="Provide the workspace-relative AL file path to delete.")
+    root = Path(project_root).resolve()
+    specs_dir = specs_root(root) / spec_name
+    spec = load_spec(specs_dir)
+
+    scope_boundaries = spec.get("scope_boundaries", {})
+    scope = ScopeEnforcer(
+        allowed_files=scope_boundaries.get("allowed_files", []),
+        project_root=root,
+        allowed_extensions=scope_boundaries.get("allowed_extensions", []),
+        scope_mode=scope_boundaries.get("scope_mode", "strict"),
+    )
+
+    if not authorization.implementation_authorized(root, spec_name):
+        return {
+            "status": "blocked_needs_approval",
+            "file": file_path,
+            "message": (
+                "Deletion is not authorized: no approved decision for a gating phase. "
+                "Run bc_request_approval -> human bc_submit_decision (approve) first."
+            ),
+        }
+    fresh_review, freshness_reason = authorization.review_is_fresh(root, spec_name)
+    if not fresh_review:
+        return {
+            "status": "blocked_needs_fresh_review",
+            "file": file_path,
+            "message": "Deletion is blocked until a fresh review packet exists.",
+            "reason": freshness_reason,
+        }
+
+    from bc_agentic_mcp.validation import sanitize_path
+    sanitize_path(file_path)
+    norm = file_path.replace("/", "\\")
+    ordered = any(
+        str(o.get("change", "")).lower().startswith("remove")
+        and str(o.get("target", "")).replace("/", "\\").lower() == norm.lower()
+        for o in spec.get("objects_to_modify", [])
+    )
+    if not ordered:
+        return {
+            "status": "blocked_not_in_removal_plan",
+            "file": file_path,
+            "message": (
+                "The approved spec does not order this file's removal — only files with an "
+                "explicit 'Remove …' change in objects_to_modify may be deleted. Fix the spec "
+                "(scope change + re-review) instead of forcing the deletion."
+            ),
+        }
+    if not scope.check_write(file_path):
+        return {"status": "scope_violation", "file": file_path,
+                "message": scope.block_reason(file_path)}
+    target = root / file_path
+    if not target.exists():
+        return {"status": "already_absent", "file": file_path,
+                "message": "File does not exist — nothing to delete (idempotent)."}
+
+    backup_dir = specs_dir / "deleted"
+    backup_dir.mkdir(parents=True, exist_ok=True)
+    backup_path = backup_dir / target.name
+    backup_path.write_text(target.read_text(encoding="utf-8", errors="replace"), encoding="utf-8")
+    project_dir = target.parent
+
+    # Judge by DELTA, not raw project errors (same lesson as the write path's
+    # baseline-noise rule): compile BEFORE the deletion for a baseline, delete,
+    # compile again — only NEW errors are dangling references to the removed object.
+    from bc_agentic_mcp import al_compiler
+    baseline = al_compiler.compile_project(str(project_dir))
+    baseline_keys = {
+        (d.get("code"), (d.get("sourceLocation") or {}).get("file"), d.get("message"))
+        for d in baseline.get("diagnostics", []) if d.get("severity") == "error"
+    } if baseline.get("available") else set()
+
+    target.unlink()
+
+    comp = al_compiler.compile_project(str(project_dir))
+    result: Dict[str, Any] = {
+        "status": "deleted",
+        "file": file_path,
+        "backup": str(backup_path),
+    }
+    if comp.get("available"):
+        c_errors = [d for d in comp["diagnostics"] if d.get("severity") == "error"]
+        c_warnings = [d for d in comp["diagnostics"] if d.get("severity") == "warning"]
+        new_errors = [
+            d for d in c_errors
+            if (d.get("code"), (d.get("sourceLocation") or {}).get("file"), d.get("message"))
+            not in baseline_keys
+        ]
+        _persist_quality(specs_dir, new_errors, c_warnings, "compiler", comp.get("analyzers", []))
+        result["compile"] = {"success": comp.get("success"), "errors": len(c_errors),
+                             "new_errors": len(new_errors), "project": comp.get("project")}
+        if new_errors:
+            result["status"] = "deleted_with_dangling_references"
+            result["message"] = (
+                "The deletion introduced new compile errors — remaining code still references "
+                "the removed object(s). Remove those references (bc_implement_write) before "
+                "proceeding."
+            )
+            result["diagnostics"] = new_errors[:20]
+            return result
+    else:
+        result["compile"] = {"success": None,
+                             "note": comp.get("reason", "compiler unavailable — static-only")}
+    _update_tasks_md(specs_dir, task_ids)
+    return result
 
 
 async def _execute_task(

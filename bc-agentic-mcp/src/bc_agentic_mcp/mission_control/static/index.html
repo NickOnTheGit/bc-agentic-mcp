@@ -1,0 +1,289 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Zig:Mission Control</title>
+<link rel="stylesheet" href="/static/app.css?v=5">
+</head>
+<body>
+<header id="topbar">
+  <div class="brand">
+    <span class="brand-name">Zig<span class="brand-colon">:</span><span class="brand-sub">Mission&nbsp;Control</span></span>
+  </div>
+  <div class="top-status">
+    <button class="btn ghost" id="btn-routines" title="Scheduled routines — you define what runs and when">⏰</button>
+    <button class="btn ghost" id="btn-notify" title="Desktop notifications when a mission needs you">🔔</button>
+    <button class="btn ghost" id="btn-presets" title="Environment presets (container, ADO, branches)">⚙</button>
+    <span id="live-dot" class="dot"></span><span id="live-label">CONNECTING</span>
+    <span class="sep">|</span>
+    <span id="project-root" class="mono muted"></span>
+  </div>
+</header>
+
+<main id="layout">
+  <!-- ======= LEFT: launch pad + missions ======= -->
+  <aside id="sidebar">
+    <section class="panel">
+      <h2>Launch Pad</h2>
+      <form id="launch-form">
+        <label>Work item / PBI / bug #
+          <input id="launch-wi" type="text" placeholder="240032" autocomplete="off" required>
+        </label>
+        <label>Mission name
+          <input id="launch-name" type="text" placeholder="wi240032-facility-fields"
+                 pattern="[A-Za-z0-9][A-Za-z0-9._-]*" autocomplete="off" required>
+        </label>
+        <div class="row">
+          <label class="radio"><input type="radio" name="tier" value="item" checked> Item</label>
+          <label class="radio"><input type="radio" name="tier" value="feature"> Feature tree</label>
+        </div>
+        <details>
+          <summary>ADO connection (optional)</summary>
+          <label>Org URL <input id="launch-org" type="text" placeholder="https://dev.azure.com/yourorg"></label>
+          <label>Project <input id="launch-project" type="text" placeholder="YourProject"></label>
+        </details>
+        <button type="submit" class="btn primary big" id="launch-btn">▲ LAUNCH MISSION</button>
+      </form>
+    </section>
+
+    <section class="panel">
+      <h2>🧠 Refinement Lab</h2>
+      <form id="intake-form">
+        <label>Topic name
+          <input id="intake-name" type="text" placeholder="facility-space-idea"
+                 pattern="[A-Za-z0-9][A-Za-z0-9._-]*" autocomplete="off" required>
+        </label>
+        <label>Paste anything — email, notes, requirements
+          <textarea id="intake-text" placeholder="Raw material in… refined bug / PBI / feature out." style="min-height:72px"></textarea>
+        </label>
+        <label>Attach files (read as text)
+          <input id="intake-files" type="file" multiple>
+        </label>
+        <button type="submit" class="btn primary big" id="intake-btn">🧠 REFINE</button>
+      </form>
+    </section>
+
+    <section class="panel grow">
+      <h2>Missions <span id="mission-count" class="badge"></span></h2>
+      <ul id="mission-list"></ul>
+    </section>
+  </aside>
+
+  <!-- ======= MAIN: selected mission ======= -->
+  <section id="main">
+    <div id="empty-state">
+      <div class="empty-art">⌖</div>
+      <p>Select a mission — or launch a new one.</p>
+      <p class="muted small">Deterministic steps run from here. Judgment steps (spec, design, code)
+      run in the <b>bc-orchestrator</b> agent — this cockpit hands you the prompt when it's time.</p>
+    </div>
+
+    <div id="mission-view" hidden>
+      <div class="mission-head">
+        <div>
+          <h1 id="m-name"></h1>
+          <p id="m-purpose" class="muted"></p>
+        </div>
+        <div class="head-right">
+          <div class="pct-ring"><span id="m-pct">0%</span></div>
+          <span id="m-phase" class="phase-badge"></span>
+        </div>
+      </div>
+
+      <div class="progress-track"><div id="m-bar" class="progress-fill"></div></div>
+      <ol id="pipeline" class="pipeline"></ol>
+
+      <section class="panel alert" id="needs-you" hidden>
+        <h2>◉ Needs You <span id="needs-count" class="badge hot"></span></h2>
+        <div id="needs-body"></div>
+      </section>
+
+      <section class="panel" id="feature-panel" hidden>
+        <h2>Feature roll-up <span id="feature-phase" class="badge"></span></h2>
+        <div id="feature-body" class="muted small">Loading…</div>
+      </section>
+
+      <section class="panel" id="readiness-panel" hidden>
+        <h2>Readiness — verification gate <span id="readiness-badge" class="badge"></span></h2>
+        <div id="readiness-body"></div>
+      </section>
+
+      <section class="panel" id="pr-panel" hidden>
+        <h2>Pull request</h2>
+        <div id="pr-meta" class="small"></div>
+        <div class="controls" style="margin-top:8px">
+          <button class="btn" id="btn-pr-status">↻ Merge status</button>
+          <button class="btn" id="btn-pr-comments">💬 Review comments</button>
+        </div>
+        <div id="pr-out" class="action-output" hidden></div>
+      </section>
+
+      <section class="panel" id="intake-panel" hidden>
+        <h2>🧠 Refinement dossier <span id="intake-lane" class="badge"></span></h2>
+        <div id="intake-dossier"></div>
+        <div class="controls" style="margin-top:10px">
+          <button class="btn" id="btn-intake-analyze">🔎 Re-analyze</button>
+        </div>
+        <div style="margin-top:12px; border-top:1px solid var(--line); padding-top:10px">
+          <p class="muted small" style="margin:0 0 6px">Graduate into the delivery lane (epic-sized? split into features first):</p>
+          <div class="row">
+            <label class="radio"><input type="radio" name="grad-lane" value="bug"> 🐞 Bug</label>
+            <label class="radio"><input type="radio" name="grad-lane" value="pbi" checked> 📌 PBI</label>
+            <label class="radio"><input type="radio" name="grad-lane" value="feature"> 🧩 Feature</label>
+          </div>
+          <label>New mission name <input id="grad-spec" type="text" placeholder="wi240500-space-link"></label>
+          <label>ADO work item id (optional) <input id="grad-wi" type="text" placeholder="240500"></label>
+          <label id="grad-children-wrap" hidden>Child PBIs — one per line
+            <textarea id="grad-children" placeholder="Add SpaceEntryNo field to facility table&#10;Show space column on list pages"></textarea></label>
+          <div class="need-actions" style="margin-top:8px">
+            <button class="btn primary" id="btn-graduate">🎓 Graduate</button>
+          </div>
+        </div>
+        <div id="push-ado-wrap" hidden style="margin-top:12px; border-top:1px solid var(--line); padding-top:10px">
+          <p class="muted small" style="margin:0 0 6px"><b>Push children to ADO</b> — creates the child PBIs
+          as real work items (parent-linked). Deliberate write: check the box to confirm.</p>
+          <label>Parent feature work item id <input id="push-parent" type="text" placeholder="239584"></label>
+          <label class="radio"><input type="checkbox" id="push-confirm"> I approved this child list — create them in ADO</label>
+          <div class="need-actions" style="margin-top:8px">
+            <button class="btn danger" id="btn-push-ado">📤 Create work items in ADO</button>
+          </div>
+        </div>
+      </section>
+
+      <section class="panel" id="bug-panel" hidden>
+        <h2>🐞 Bug diagnosis <span id="bug-badge" class="badge"></span></h2>
+        <div id="bug-recorded" hidden></div>
+        <div id="bug-form" hidden>
+          <p class="muted small" style="margin:0 0 8px">A bug is never fixed from its ticket text. Record the verified
+          diagnosis first — the server checks every evidence reference against the repo and blocks planning until this passes.</p>
+          <label>Symptom (what breaks, exactly)
+            <textarea id="bf-symptom" style="min-height:44px" placeholder="e.g. Posting a rental mutation with X raises error Y"></textarea></label>
+          <label>Root cause (why — code-level)
+            <textarea id="bf-cause" style="min-height:44px" placeholder="e.g. OnValidate of field Z skips the feature check when …"></textarea></label>
+          <label>Fix approach
+            <textarea id="bf-fix" style="min-height:44px" placeholder="e.g. Guard the assignment in codeunit W with …"></textarea></label>
+          <label>Evidence — one per line (.al path or object ref like "table 11024121")
+            <textarea id="bf-evidence" style="min-height:44px" placeholder="extensions/BaseApp/src/…/File.Table.al&#10;codeunit 11024290"></textarea></label>
+          <label>Regression risk (optional)
+            <input id="bf-risk" type="text" placeholder="What could this fix break?"></label>
+          <div class="need-actions" style="margin-top:8px">
+            <button class="btn primary" id="btn-root-cause">🧬 Record verified diagnosis</button>
+          </div>
+        </div>
+      </section>
+
+      <section class="panel" id="plangate-panel" hidden>
+        <h2>Plan gate — review packet</h2>
+        <p class="muted small" style="margin:0 0 8px">Write the item's requirement bullets; the server turns them into a
+        gated TDD review packet (or returns clarifying questions). Then request the plan approval.</p>
+        <textarea id="pg-bullets" placeholder="- MODIFY table X: add field …&#10;- CREATE codeunit Y per precedent Z …&#10;- Acceptance: (1) … (2) …" style="min-height:110px"></textarea>
+        <div class="need-actions" style="margin-top:8px">
+          <button class="btn primary" id="btn-prepare-review">📐 Prepare review packet</button>
+          <button class="btn" id="btn-consistency" title="Cross-artifact check: spec ↔ design ↔ tasks ↔ charter + requirement checklist">🔬 Check consistency</button>
+        </div>
+        <div style="margin-top:12px">
+          <input id="pg-summary" type="text" placeholder="Approval summary — what is the reviewer approving?">
+          <div class="need-actions" style="margin-top:8px">
+            <button class="btn" id="btn-request-approval">🗃 Request plan approval</button>
+          </div>
+        </div>
+      </section>
+
+      <section class="panel">
+        <h2>Controls</h2>
+        <div class="controls">
+          <button class="btn primary" id="btn-advance" title="Chain every deterministic step until the next gate">⏩ Advance</button>
+          <button class="btn" id="btn-autopilot" title="Keep advancing automatically until a human gate">🛸 Autopilot: OFF</button>
+          <button class="btn" id="btn-autoclarify" title="Propose evidence-grounded answers to open questions">🧭 Auto-clarify</button>
+          <button class="btn" id="btn-guidance" title="Ask the server what to do next (bc_status next_actions)">🛰 Guidance</button>
+          <button class="btn" id="btn-dispatch" title="Run the coding agent headlessly for the next judgment step">🤖 Dispatch agent</button>
+          <button class="btn" id="btn-worktree" title="Create/show this mission's isolated git worktree">🌿 Worktree</button>
+          <button class="btn" id="btn-run-tests" title="Publish + run the test extension in your BC container (uses ⚙ presets)">🧪 Run tests</button>
+          <button class="btn" id="btn-preflight" title="Container/license/symbols sanity check before test runs (uses ⚙ presets)">🩺 Env check</button>
+          <button class="btn" id="btn-diff" title="Git diff of this item's allowed files">📝 Diff</button>
+          <button class="btn" id="btn-metrics" title="Cycle time + reliability for this mission">📊 Metrics</button>
+          <button class="btn ghost" id="btn-agent-prompt" title="Copy a ready-to-paste prompt for the bc-orchestrator agent">📋 Copy agent prompt</button>
+        </div>
+        <div id="action-output" class="action-output" hidden></div>
+        <div id="dispatch-strip" class="action-output" hidden></div>
+      </section>
+
+      <div class="two-col">
+        <section class="panel">
+          <h2>Artifacts to review</h2>
+          <ul id="artifact-list" class="artifact-list"></ul>
+        </section>
+        <section class="panel">
+          <h2>Mission log</h2>
+          <ul id="event-log" class="event-log"></ul>
+        </section>
+      </div>
+    </div>
+  </section>
+</main>
+
+<!-- artifact viewer -->
+<div id="viewer" class="modal" hidden>
+  <div class="modal-box">
+    <div class="modal-head">
+      <span id="viewer-title" class="mono"></span>
+      <button class="btn ghost" id="viewer-close">✕</button>
+    </div>
+    <div id="viewer-body" class="modal-body"></div>
+  </div>
+</div>
+
+<!-- presets -->
+<div id="presets-modal" class="modal" hidden>
+  <div class="modal-box" style="width:min(560px,92vw)">
+    <div class="modal-head">
+      <span>⚙ Environment presets</span>
+      <button class="btn ghost" id="presets-close">✕</button>
+    </div>
+    <div class="modal-body">
+      <p class="muted small">Saved in this browser only. ⏩ Advance and the Launch Pad use these
+      automatically — so the deterministic chain (tests, PR) never stalls asking for inputs.
+      Secrets stay out: the test password is read from the environment variable named below.</p>
+      <label>BC test container name <input id="ps-container" type="text" placeholder="bcserver"></label>
+      <label>Test extension id <input id="ps-extension" type="text" placeholder="guid of the test app"></label>
+      <label>Credential env var <input id="ps-credenv" type="text" placeholder="BC_TEST_PASSWORD"></label>
+      <label>App project folder <input id="ps-appfolder" type="text" placeholder="extensions/BaseApp"></label>
+      <label>ADO org URL <input id="ps-org" type="text" placeholder="https://dev.azure.com/yourorg"></label>
+      <label>ADO project <input id="ps-project" type="text" placeholder="YourProject"></label>
+      <label>Repository <input id="ps-repo" type="text" placeholder="YourRepo"></label>
+      <label>Target branch <input id="ps-branch" type="text" placeholder="master"></label>
+      <label>Worktrees base folder <input id="ps-wtbase" type="text" placeholder="C:\bc-worktrees"></label>
+      <label>Agent command template <input id="ps-agentcmd" type="text" placeholder="copilot -p {prompt} --allow-all-tools"></label>
+      <div class="need-actions" style="margin-top:12px">
+        <button class="btn primary" id="presets-save">Save presets</button>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- routines -->
+<div id="routines-modal" class="modal" hidden>
+  <div class="modal-box" style="width:min(760px,94vw)">
+    <div class="modal-head">
+      <span>⏰ Scheduled routines — you decide what runs and when</span>
+      <button class="btn ghost" id="routines-close">✕</button>
+    </div>
+    <div class="modal-body">
+      <div id="routines-list"></div>
+      <div class="need-actions" style="margin:10px 0">
+        <button class="btn" id="routine-add">✚ Add routine</button>
+        <button class="btn primary" id="routines-save">💾 Save schedule</button>
+        <button class="btn" id="btn-tool-health" title="Per-tool reliability + docstring improvement candidates">📈 Tool health now</button>
+      </div>
+      <div id="routines-out" class="action-output" hidden></div>
+      <h3 style="color:var(--accent-2); font-size:12px; letter-spacing:1px; text-transform:uppercase">Recent runs</h3>
+      <div id="routines-runs" class="small"></div>
+    </div>
+  </div>
+</div>
+
+<div id="toast" hidden></div>
+<script src="/static/app.js?v=5"></script>
+</body>
+</html>

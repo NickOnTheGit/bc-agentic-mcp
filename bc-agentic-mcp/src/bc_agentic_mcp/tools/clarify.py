@@ -1,6 +1,7 @@
 """bc_clarify — structured clarification questions. See spec Section 3.3."""
 import re
 from pathlib import Path
+from bc_agentic_mcp.workspace import specs_root
 from typing import Dict, Any, List, Optional
 
 
@@ -13,7 +14,7 @@ async def handle_clarify(
 ) -> Dict[str, Any]:
     """Generate structured clarification questions from human bullets."""
     root = Path(project_root).resolve()
-    specs_dir = root / ".specs" / spec_name
+    specs_dir = specs_root(root) / spec_name
     specs_dir.mkdir(parents=True, exist_ok=True)
 
     if not analysis:

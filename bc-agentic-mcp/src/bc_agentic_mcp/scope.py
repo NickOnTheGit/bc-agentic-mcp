@@ -11,12 +11,15 @@ class ScopeEnforcer:
         allowed_files: List[str],
         project_root: Path,
         allowed_extensions: Optional[List[str]] = None,
+        scope_mode: str = "strict",
     ):
         self.project_root = Path(project_root).resolve()
         self.allowed_files: Set[Path] = {
             (self.project_root / f).resolve() for f in allowed_files
         }
         self.allowed_extensions: Set[str] = set(allowed_extensions or [])
+        mode = (scope_mode or "strict").strip().lower()
+        self.scope_mode = mode if mode in {"strict", "permissive"} else "strict"
 
     def _under_root(self, target: Path) -> bool:
         """True only if target is genuinely inside project_root.
@@ -41,14 +44,23 @@ class ScopeEnforcer:
         target = (self.project_root / file_path).resolve()
         if not self._under_root(target):
             return False
-        if target not in self.allowed_files:
+        if self.scope_mode == "strict" and target not in self.allowed_files:
             return False
+        if self.allowed_files and self.scope_mode == "permissive" and target not in self.allowed_files:
+            # In permissive mode explicit file allowlists are advisory, not mandatory.
+            return self._is_in_allowed_extension(file_path)
         return True
 
     def check_create(self, file_path: str) -> bool:
-        """Check if creating this file is within scope and allowed extension."""
+        """Check if creating this file is within scope and allowed extension.
+
+        Fail-closed behavior: when explicit allowed_files are declared, creation must target
+        one of those files exactly.
+        """
         target = (self.project_root / file_path).resolve()
         if not self._under_root(target):
+            return False
+        if self.scope_mode == "strict" and self.allowed_files and target not in self.allowed_files:
             return False
         if not self._is_in_allowed_extension(file_path):
             return False
@@ -61,4 +73,6 @@ class ScopeEnforcer:
             return f"File {file_path} is outside project root"
         if self.allowed_extensions and not self._is_in_allowed_extension(file_path):
             return f"File {file_path} is not in an allowed extension: {', '.join(sorted(self.allowed_extensions))}"
+        if self.scope_mode == "strict":
+            return f"File {file_path} is not in declared scope boundaries (scope_mode=strict)"
         return f"File {file_path} is not in declared scope boundaries"

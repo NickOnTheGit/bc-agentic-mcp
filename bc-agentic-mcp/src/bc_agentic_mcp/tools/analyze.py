@@ -4,7 +4,10 @@ See spec Section 3.2.
 import json
 import re
 from pathlib import Path
+from bc_agentic_mcp.workspace import specs_root
 from typing import Dict, Any, List
+
+from bc_agentic_mcp.al_mcp_client import analyze_project as analyze_project_with_microsoft
 
 
 # AL object type patterns — matches object declarations
@@ -37,14 +40,16 @@ EVENT_SUBSCRIBER_PATTERN = re.compile(r'\[EventSubscriber\(.*?\)\]', re.DOTALL)
 ERROR_PATTERNS = re.compile(r'\b(Error|TestField|AssertError|FieldError)\(', re.MULTILINE)
 
 
-def scan_al_files(project_root: Path) -> List[Dict[str, Any]]:
+def scan_al_files(project_root: Path, max_files: int = 1000) -> List[Dict[str, Any]]:
     """Scan all .al files in the project and extract object metadata."""
     objects: List[Dict[str, Any]] = []
     src_dir = Path(project_root) / "src"
     if not src_dir.exists():
         return objects
 
-    for al_file in sorted(src_dir.rglob("*.al")):
+    for index, al_file in enumerate(sorted(src_dir.rglob("*.al"))):
+        if index >= max_files:
+            break
         content = al_file.read_text(encoding="utf-8", errors="replace")
         rel_path = str(al_file.relative_to(project_root))
 
@@ -90,14 +95,16 @@ def extract_naming_conventions(objects: List[Dict[str, Any]]) -> Dict[str, Any]:
     return conventions
 
 
-def find_event_subscribers(project_root: Path) -> List[Dict[str, str]]:
+def find_event_subscribers(project_root: Path, max_files: int = 1000) -> List[Dict[str, str]]:
     """Find event subscribers in the project."""
     subscribers: List[Dict[str, str]] = []
     src_dir = Path(project_root) / "src"
     if not src_dir.exists():
         return subscribers
 
-    for al_file in sorted(src_dir.rglob("*.al")):
+    for index, al_file in enumerate(sorted(src_dir.rglob("*.al"))):
+        if index >= max_files:
+            break
         content = al_file.read_text(encoding="utf-8", errors="replace")
         for match in EVENT_SUBSCRIBER_PATTERN.finditer(content):
             subscribers.append(
@@ -111,7 +118,9 @@ def find_event_subscribers(project_root: Path) -> List[Dict[str, str]]:
 
 
 def find_similar_modules(
-    project_root: Path, current_objects: List[Dict[str, Any]]
+    project_root: Path,
+    current_objects: List[Dict[str, Any]],
+    max_sibling_modules: int = 12,
 ) -> List[Dict[str, Any]]:
     """Find sibling modules with similar object type composition."""
     parent = Path(project_root).parent
@@ -120,13 +129,15 @@ def find_similar_modules(
     if not parent.exists():
         return similar
 
-    for sibling in parent.iterdir():
+    for sibling_index, sibling in enumerate(parent.iterdir()):
+        if sibling_index >= max_sibling_modules:
+            break
         if not sibling.is_dir() or sibling.resolve() == Path(project_root).resolve():
             continue
         sibling_app = sibling / "app.json"
         if not sibling_app.exists():
             continue
-        sibling_objects = scan_al_files(sibling)
+        sibling_objects = scan_al_files(sibling, max_files=250)
         if sibling_objects:
             current_types = {o["type"] for o in current_objects}
             sibling_types = {o["type"] for o in sibling_objects}
@@ -144,17 +155,22 @@ def find_similar_modules(
     return sorted(similar, key=lambda m: m["relevance_score"], reverse=True)
 
 
-def analyze_module(
+def _analyze_module_local(
     module_path: Path,
     spec_name: str = None,
     depth: str = "basic",
+    max_files: int = 1000,
+    max_sibling_modules: int = 12,
 ) -> Dict[str, Any]:
     """Analyze an AL module and return structured findings."""
     root = Path(module_path)
-    objects = scan_al_files(root)
+    objects = scan_al_files(root, max_files=max_files)
     conventions = extract_naming_conventions(objects)
-    subscribers = find_event_subscribers(root)
-    similar = find_similar_modules(root, objects)
+    subscribers = find_event_subscribers(root, max_files=max_files)
+    depth_key = (depth or "basic").lower()
+    similar = []
+    if depth_key != "basic":
+        similar = find_similar_modules(root, objects, max_sibling_modules=max_sibling_modules)
 
     result: Dict[str, Any] = {
         "module_summary": {
@@ -198,7 +214,75 @@ def analyze_module(
             pass
 
     if spec_name:
-        specs_dir = root / ".specs" / spec_name
+        specs_dir = specs_root(root) / spec_name
+        specs_dir.mkdir(parents=True, exist_ok=True)
+        analysis_path = specs_dir / "analysis.md"
+        analysis_path.write_text(json.dumps(result, indent=2, default=str), encoding="utf-8")
+
+    return result
+
+
+def analyze_module(
+    module_path: Path,
+    spec_name: str = None,
+    depth: str = "basic",
+    max_files: int = 1000,
+    max_sibling_modules: int = 12,
+) -> Dict[str, Any]:
+    """Synchronous local fallback for tests and offline use."""
+    return _analyze_module_local(
+        module_path=module_path,
+        spec_name=spec_name,
+        depth=depth,
+        max_files=max_files,
+        max_sibling_modules=max_sibling_modules,
+    )
+
+
+async def handle_analyze_module(
+    module_path: Path,
+    spec_name: str = None,
+    depth: str = "basic",
+    max_files: int = 1000,
+    max_sibling_modules: int = 12,
+) -> Dict[str, Any]:
+    """Primary analyzer that prefers Microsoft's AL MCP backend."""
+    root = Path(module_path)
+    try:
+        microsoft_result = await analyze_project_with_microsoft(root, depth=depth)
+        local_result = _analyze_module_local(
+            module_path=root,
+            spec_name=None,
+            depth=depth,
+            max_files=max_files,
+            max_sibling_modules=max_sibling_modules,
+        )
+        result = {
+            **local_result,
+            "module_summary": {
+                **local_result["module_summary"],
+                **microsoft_result.summary,
+                "analysis_backend": "microsoft-al-mcp",
+            },
+            "dependencies": {
+                **local_result.get("dependencies", {}),
+                **microsoft_result.dependencies,
+            },
+            "diagnostics": microsoft_result.diagnostics,
+            "analysis_backend": "microsoft-al-mcp",
+        }
+    except Exception:
+        result = _analyze_module_local(
+            module_path=root,
+            spec_name=None,
+            depth=depth,
+            max_files=max_files,
+            max_sibling_modules=max_sibling_modules,
+        )
+        result["analysis_backend"] = "local-fallback"
+
+    if spec_name:
+        specs_dir = specs_root(root) / spec_name
         specs_dir.mkdir(parents=True, exist_ok=True)
         analysis_path = specs_dir / "analysis.md"
         analysis_path.write_text(json.dumps(result, indent=2, default=str), encoding="utf-8")

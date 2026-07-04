@@ -1,0 +1,11 @@
+{
+  "agents/bc-implementer.agent.md": "434eda51660369b8",
+  "agents/bc-orchestrator.agent.md": "d5bc4405acfa85fe",
+  "agents/bc-refiner.agent.md": "4c0a384afffc9aeb",
+  "agents/bc-reviewer.agent.md": "ae1d322b2b6a6c86",
+  "src/bc_agentic_mcp/prompts/clarifier.md": "ab36dd573a0547eb",
+  "src/bc_agentic_mcp/prompts/designer.md": "6f7c53c1b8ecc975",
+  "src/bc_agentic_mcp/prompts/implementer.md": "bcac11844b9b6d5a",
+  "src/bc_agentic_mcp/prompts/spec_writer.md": "5c23c48fce36044d",
+  "src/bc_agentic_mcp/templates/tdd_general.md": "d8257b7a2c2c2dab"
+}

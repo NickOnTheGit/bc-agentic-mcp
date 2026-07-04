@@ -1,5 +1,6 @@
 """Tests for regression comparison and baseline management."""
 import json
+import os
 from pathlib import Path
 
 import pytest
@@ -11,6 +12,7 @@ from bc_agentic_mcp.tools.quality_check import (
     _cleanup_old_baselines,
     _key,
 )
+from bc_agentic_mcp.workspace import specs_root
 
 
 def _make_diag(code: str, message: str, file: str, line: int) -> dict:
@@ -132,3 +134,37 @@ def test_cleanup_old_baselines_keeps_only_five(tmp_path):
 
     remaining = sorted(baseline_dir.glob("baseline_*.json"))
     assert len(remaining) == 5
+
+
+@pytest.mark.asyncio
+async def test_quality_check_scopes_diagnostics_to_spec_allowed_files(tmp_path):
+    (tmp_path / "app.json").write_text(
+        json.dumps({"name": "T", "publisher": "Zig", "version": "1.0.0.0", "idRanges": [{"from": 11015500, "to": 11015999}]}),
+        encoding="utf-8",
+    )
+    src = tmp_path / "src"
+    src.mkdir(parents=True)
+    (src / "Scoped.Page.al").write_text(
+        "page 11015600 ScopedApi\n{\n    PageType = API;\n    APIPublisher = 'cegeka';\n    APIGroup = 'housing';\n    APIVersion = 'v1.0';\n    EntityName = 'ok';\n    EntitySetName = 'oks';\n    ODataKeyFields = SystemId;\n    DelayedInsert = true;\n    SourceTable = Customer;\n}\n",
+        encoding="utf-8",
+    )
+    (src / "UnrelatedBroken.Codeunit.al").write_text("codeunit 11015601 Broken { ", encoding="utf-8")
+
+    external_specs = tmp_path / "_specs_external"
+    os.environ["BC_AGENTIC_SPECS_ROOT"] = str(external_specs)
+    try:
+        sdir = specs_root(tmp_path) / "wi-scope"
+        sdir.mkdir(parents=True)
+        (sdir / "spec.json").write_text(
+            json.dumps({"scope_boundaries": {"allowed_files": ["src/Scoped.Page.al"]}}),
+            encoding="utf-8",
+        )
+
+        result = await __import__("bc_agentic_mcp.tools.quality_check", fromlist=["handle_quality_check"]).handle_quality_check(
+            project_root=str(tmp_path), spec_name="wi-scope"
+        )
+    finally:
+        os.environ.pop("BC_AGENTIC_SPECS_ROOT", None)
+
+    assert result["errors"] == 0
+    assert not [d for d in result["diagnostics"] if d.get("code") == "V0001"]

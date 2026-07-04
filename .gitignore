@@ -5,3 +5,10 @@ build/
 dist/
 *.alc/
 .specs/
+
+# runtime state - real work-item data, NEVER ships
+.workspaces/
+*.tmp_*
+.vscode/mcp.json
+share/out/
+

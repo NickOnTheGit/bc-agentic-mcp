@@ -1,10 +1,11 @@
 """Server configuration and AL MCP Server discovery. See spec Section 5.3, 9.2."""
+import json
 import os
 import subprocess
 import sys
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Optional
+from typing import List, Optional
 
 
 @dataclass
@@ -32,8 +33,13 @@ class ServerConfig:
     app_json_path: Optional[Path] = None
     per_tool_rate: int = 30
     per_session_rate: int = 120
+    tool_timeout_seconds: int = 60
+    analysis_max_files: int = 1000
+    analysis_max_sibling_modules: int = 12
     max_compile_attempts: int = 3
     approval_timeout_minutes: int = 60
+    analyzers: List[str] = field(default_factory=list)
+    agent_role: str = "orchestrator"
 
 
 def discover_al_tool() -> ALToolStatus:
@@ -71,7 +77,8 @@ def discover_al_tool() -> ALToolStatus:
     # 3. PATH
     try:
         result = subprocess.run(
-            ["altool", "--version"], capture_output=True, text=True, timeout=5
+            ["altool", "--version"], capture_output=True, text=True, timeout=5,
+            stdin=subprocess.DEVNULL,
         )
         if result.returncode == 0:
             return ALToolStatus(altool_path=Path("altool"), version=result.stdout.strip())
@@ -98,3 +105,75 @@ def discover_app_json(start_dir: Path) -> Optional[Path]:
             break  # reached filesystem root
         current = parent
     return None
+
+
+def discover_analyzers(root: Path) -> List[str]:
+    """Detect which AL code analyzers are configured for the project.
+
+    Looks at analyzer config files and the VS Code `al.codeAnalyzers` setting.
+    Covers Microsoft analyzers (CodeCop/AppSourceCop/UICop/PerTenantExtensionCop)
+    and community analyzers (LinterCop, ALCops).
+    """
+    found = set()
+    config_files = {
+        "AppSourceCop.json": "AppSourceCop",
+        "LinterCop.json": "LinterCop",
+        "CodeCop.json": "CodeCop",
+        "UICop.json": "UICop",
+    }
+    for filename, label in config_files.items():
+        if (root / filename).exists():
+            found.add(label)
+
+    settings = root / ".vscode" / "settings.json"
+    if settings.exists():
+        try:
+            data = json.loads(settings.read_text(encoding="utf-8", errors="replace"))
+            for analyzer in data.get("al.codeAnalyzers", []) or []:
+                token = str(analyzer).strip().strip("${}")
+                if token:
+                    found.add(token)
+        except (OSError, json.JSONDecodeError):
+            pass
+    return sorted(found)
+
+
+def recommended_al_tools() -> List[dict]:
+    """Curated list of best-in-class AL/Business Central tooling."""
+    return [
+        {
+            "name": "AL Language (alc) compiler",
+            "why": "Authoritative compile + diagnostics for AL.",
+            "url": "https://marketplace.visualstudio.com/items?itemName=ms-dynamics-smb.al",
+        },
+        {
+            "name": "AppSourceCop / CodeCop / UICop / PerTenantExtensionCop",
+            "why": "Microsoft analyzers: breaking-change, style, UI, and PTE rules.",
+            "url": "https://learn.microsoft.com/en-us/dynamics365/business-central/dev-itpro/developer/devenv-using-code-analysis-tool",
+        },
+        {
+            "name": "ALCops",
+            "why": "Active community analyzers (successor to LinterCop) for clean AL.",
+            "url": "https://alcops.dev/",
+        },
+        {
+            "name": "AL Object ID Ninja",
+            "why": "Automatic object/field ID assignment within app.json idRanges.",
+            "url": "https://github.com/vjekob/al-objid",
+        },
+        {
+            "name": "BcContainerHelper",
+            "why": "Local Business Central build/test containers.",
+            "url": "https://github.com/microsoft/navcontainerhelper",
+        },
+        {
+            "name": "AL-Go for GitHub",
+            "why": "CI/CD pipelines for AL apps.",
+            "url": "https://github.com/microsoft/AL-Go",
+        },
+        {
+            "name": "AL Test Runner",
+            "why": "Run and debug AL tests from VS Code.",
+            "url": "https://marketplace.visualstudio.com/items?itemName=jamespearson.al-test-runner",
+        },
+    ]

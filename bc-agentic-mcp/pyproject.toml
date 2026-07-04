@@ -19,12 +19,13 @@ dev = ["pytest>=8.0", "pytest-asyncio>=0.24", "pytest-mock>=3.14"]
 
 [project.scripts]
 bc-agentic-mcp = "bc_agentic_mcp.server:main"
+bc-agentic-mission-control = "bc_agentic_mcp.mission_control.app:main"
 
 [tool.setuptools.packages.find]
 where = ["src"]
 
 [tool.setuptools.package-data]
-bc_agentic_mcp = ["prompts/*.md", "references/*"]
+bc_agentic_mcp = ["prompts/*.md", "references/*", "templates/*.md", "mission_control/static/*"]
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"

@@ -3,6 +3,7 @@ See spec Section 3.12.
 """
 import json
 from pathlib import Path
+from bc_agentic_mcp.workspace import specs_root
 from typing import Dict, Any
 
 from bc_agentic_mcp.spec_loader import load_spec
@@ -14,7 +15,7 @@ async def handle_upgrade_codeunit(
 ) -> Dict[str, Any]:
     """Generate an upgrade codeunit scaffold (Subtype = Upgrade)."""
     root = Path(project_root).resolve()
-    specs_dir = root / ".specs" / spec_name
+    specs_dir = specs_root(root) / spec_name
     spec = load_spec(specs_dir)
 
     module = spec.get("module", root.name)
