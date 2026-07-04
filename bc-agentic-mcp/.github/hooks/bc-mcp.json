@@ -1,0 +1,30 @@
+{
+  "hooks": {
+    "SessionStart": [
+      {
+        "type": "command",
+        "command": "pwsh -NoProfile -ExecutionPolicy Bypass -File \"C:\\Users\\NicolaeCatalina\\.bc-mcp\\bc-mcp-audit.ps1\"",
+        "timeout": 15
+      }
+    ],
+    "PreToolUse": [
+      {
+        "type": "command",
+        "command": "pwsh -NoProfile -ExecutionPolicy Bypass -File \"C:\\Users\\NicolaeCatalina\\.bc-mcp\\bc-mcp-audit.ps1\"",
+        "timeout": 15
+      },
+      {
+        "type": "command",
+        "command": "pwsh -NoProfile -ExecutionPolicy Bypass -File \"C:\\Users\\NicolaeCatalina\\.bc-mcp\\bc-mcp-guard.ps1\"",
+        "timeout": 15
+      }
+    ],
+    "Stop": [
+      {
+        "type": "command",
+        "command": "pwsh -NoProfile -ExecutionPolicy Bypass -File \"C:\\Users\\NicolaeCatalina\\.bc-mcp\\bc-mcp-audit.ps1\"",
+        "timeout": 15
+      }
+    ]
+  }
+}
