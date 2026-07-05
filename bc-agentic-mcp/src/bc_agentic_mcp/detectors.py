@@ -185,7 +185,7 @@ def _detect_unpaired_bootstrap(project_root: Path, spec_name: str) -> List[Findi
         if not unpaired:
             continue
         paired_siblings = bare_siblings = 0
-        for sib in p.parent.glob("*.al"):
+        for sib in sorted(p.parent.glob("*.al")):
             if sib == p:
                 continue
             try:

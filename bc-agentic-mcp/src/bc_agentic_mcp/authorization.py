@@ -110,7 +110,7 @@ def authorized_specs(project_root: Path) -> List[str]:
     if not specs_dir.is_dir():
         return []
     out: List[str] = []
-    for child in specs_dir.iterdir():
+    for child in sorted(specs_dir.iterdir(), key=lambda p: p.name.lower()):
         if child.is_dir() and not child.name.startswith(".") and implementation_authorized(project_root, child.name):
             out.append(child.name)
     return out

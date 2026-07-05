@@ -69,7 +69,7 @@ def load_baseline(baseline_dir: Path) -> Optional[Dict[str, Any]]:
     """
     files = sorted(
         baseline_dir.glob("baseline_*.json"),
-        key=lambda p: p.stat().st_mtime,
+        key=lambda p: (p.stat().st_mtime, p.name),  # name tiebreak for mtime collisions
         reverse=True,
     )
     if not files:
@@ -132,7 +132,7 @@ def _cleanup_old_baselines(baseline_dir: Path, keep: int = 5) -> None:
     """
     files = sorted(
         baseline_dir.glob("baseline_*.json"),
-        key=lambda p: p.stat().st_mtime,
+        key=lambda p: (p.stat().st_mtime, p.name),  # name tiebreak for mtime collisions
         reverse=True,
     )
     for old in files[keep:]:

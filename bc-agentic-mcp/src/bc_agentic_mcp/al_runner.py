@@ -504,7 +504,7 @@ def run_full_cycle(
         "mkdir": lambda p: _Path(p).mkdir(parents=True, exist_ok=True),
         "newest_app": lambda folder: max(
             (str(p) for p in _Path(folder).glob("*.app")),
-            key=lambda p: _Path(p).stat().st_mtime,
+            key=lambda p: (_Path(p).stat().st_mtime, p),  # name tiebreak: mtime ties must not pick by fs order
             default=None,
         ),
     }

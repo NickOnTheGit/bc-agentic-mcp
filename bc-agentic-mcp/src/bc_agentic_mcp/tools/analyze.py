@@ -129,14 +129,20 @@ def find_similar_modules(
     if not parent.exists():
         return similar
 
-    for sibling_index, sibling in enumerate(parent.iterdir()):
-        if sibling_index >= max_sibling_modules:
+    # Deterministic sibling selection (wiring audit 2026-07-05): iterdir() order is
+    # filesystem-dependent, and the old index cap counted FILES and skipped entries
+    # toward max_sibling_modules — a parent with many loose files starved the scan.
+    # Sort by name; only real candidate modules (dirs with app.json) consume the cap.
+    scanned = 0
+    for sibling in sorted((p for p in parent.iterdir() if p.is_dir()), key=lambda p: p.name.lower()):
+        if scanned >= max_sibling_modules:
             break
-        if not sibling.is_dir() or sibling.resolve() == Path(project_root).resolve():
+        if sibling.resolve() == Path(project_root).resolve():
             continue
         sibling_app = sibling / "app.json"
         if not sibling_app.exists():
             continue
+        scanned += 1
         sibling_objects = scan_al_files(sibling, max_files=250)
         if sibling_objects:
             current_types = {o["type"] for o in current_objects}

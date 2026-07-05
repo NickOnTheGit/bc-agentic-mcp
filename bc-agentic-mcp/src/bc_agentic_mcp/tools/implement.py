@@ -13,6 +13,7 @@ from pathlib import Path
 from bc_agentic_mcp.workspace import specs_root
 from typing import Dict, Any, List, Optional
 import re
+import subprocess
 
 from bc_agentic_mcp.errors import MCPError, ErrorCode
 from bc_agentic_mcp.scope import ScopeEnforcer
@@ -546,6 +547,117 @@ async def handle_implement_context(
     )
 
 
+_AL_OBJECT_DECL_RE = re.compile(
+    r"^(codeunit|table|page|report|query|xmlport|enum|interface|permissionset|profile"
+    r"|pageextension|tableextension|reportextension|enumextension|permissionsetextension)"
+    r"\s+(\d+)\s+", re.IGNORECASE | re.MULTILINE)
+
+
+def _live_worktrees(project_root: Path) -> List[Path]:
+    """All live git worktrees of this repo (including project_root itself)."""
+    try:
+        out = subprocess.run(
+            ["git", "-C", str(project_root), "worktree", "list", "--porcelain"],
+            capture_output=True, text=True, timeout=15, stdin=subprocess.DEVNULL, check=True,
+        ).stdout
+    except (OSError, subprocess.SubprocessError):
+        return [project_root]
+    trees = [Path(line[9:].strip()) for line in out.splitlines() if line.startswith("worktree ")]
+    return trees or [project_root]
+
+
+def _id_collision_wall(project_root: Path, code: str, file_path: str) -> Optional[Dict[str, Any]]:
+    """CROSS-WORKTREE ID WALL: a NEW object id must be free in EVERY live worktree.
+
+    Encoded from wi267598 (2026-07-04): the spec resolver claimed 66190 free (taken
+    in-repo by SetRealtyObjSpaceDescrFDNT) and the retry 66189 was taken by a SIBLING
+    worktree's unpushed branch — two collisions, one wasted container cycle each.
+    ``git grep --untracked`` sees exactly what a merge would see: tracked + new files.
+    Fail-open on git errors (no git = no wall), never on findings.
+    """
+    m = _AL_OBJECT_DECL_RE.search(code or "")
+    if not m:
+        return None
+    kind, obj_id = m.group(1).lower(), m.group(2)
+    needle = re.compile(rf"^{kind}\s+{obj_id}\s+", re.IGNORECASE)
+    target_rel = str(file_path).replace("\\", "/").lower()
+    for tree in _live_worktrees(project_root):
+        try:
+            out = subprocess.run(
+                ["git", "-C", str(tree), "grep", "-l", "-i", "--untracked",
+                 "-E", f"^{kind} +{obj_id} ", "--", "*.al"],
+                capture_output=True, text=True, timeout=60, stdin=subprocess.DEVNULL,
+            ).stdout
+        except (OSError, subprocess.SubprocessError):
+            continue
+        for rel in (line.strip() for line in out.splitlines() if line.strip()):
+            if tree.resolve() == project_root.resolve() and rel.replace("\\", "/").lower() == target_rel:
+                continue  # the file being (re)written is not its own collision
+            try:
+                first = (tree / rel).read_text(encoding="utf-8", errors="replace")[:4000]
+            except OSError:
+                first = ""
+            if not needle.search(first):
+                continue  # git-grep line-anchor false positive
+            return {
+                "status": "blocked_id_collision",
+                "blocked": True,
+                "reason": (f"{kind} {obj_id} is already declared in '{rel}' "
+                           f"(worktree {tree}). Unpushed sibling branches mint ids too — "
+                           "pick an id that is free in EVERY live worktree."),
+                "colliding_file": str(tree / rel),
+                "next_action": "Renumber the object and retry bc_implement_write.",
+            }
+    return None
+
+
+def _fixture_archaeology(root: Path, file_path: str, code: str) -> Optional[Dict[str, Any]]:
+    """FIXTURE ARCHAEOLOGY (assist, non-blocking): mine sibling test codeunits'
+    Initialize() for setup calls the new test file lacks.
+
+    Encoded from wi267598 (2026-07-04): two container failures were fixture gaps the
+    SIBLINGS already solved — DeactivateDaebNonDaebIntegration lived one folder over
+    in ContactTest, and the auto contract line was documented by which library call
+    siblings used. Heuristic ⇒ warning, never a wall (RULES-CONVICT-OWN-CODE: only
+    deterministic checks may block).
+    """
+    if "subtype = test" not in (code or "").lower():
+        return None
+    target = root / file_path
+    folder = target.parent
+    if not folder.exists():
+        return None
+    call_re = re.compile(r"^\s*(?:\w+\.)?(\w+)\(", re.MULTILINE)
+    sibling_calls: List[set] = []
+    for sib in sorted(folder.glob("*.al")):
+        if sib.resolve() == target.resolve():
+            continue
+        try:
+            text = sib.read_text(encoding="utf-8", errors="replace")
+        except OSError:
+            continue
+        im = re.search(r"local procedure Initialize\(\)(.*?)\n    end;", text,
+                       re.DOTALL | re.IGNORECASE)
+        if not im:
+            continue
+        sibling_calls.append(set(call_re.findall(im.group(1))))
+    if not sibling_calls:
+        return None
+    common = {c for c in set.union(*sibling_calls)
+              if sum(c in s for s in sibling_calls) * 2 >= len(sibling_calls)}
+    missing = sorted(c for c in common if c not in code and c not in
+                     {"Get", "Modify", "Insert", "Commit", "Evaluate", "Clear", "exit"})
+    if not missing:
+        return None
+    return {
+        "siblings_with_initialize": len(sibling_calls),
+        "common_setup_missing": missing,
+        "note": ("Sibling test codeunits in this folder call these in Initialize() but "
+                 "the new file does not — verify each is genuinely unneeded BEFORE the "
+                 "first container run (DAEB deactivation cost a full cycle on wi267598)."),
+    }
+
+
 async def handle_implement_write(
     project_root: str,
     spec_name: str,
@@ -563,10 +675,21 @@ async def handle_implement_write(
     if not file_path or not str(file_path).strip():
         raise MCPError(ErrorCode.CLIENT_ERROR, "file_path is required for bc_implement_write",
                        hint="Provide the workspace-relative AL file path to write.")
-    return await handle_implement(
+    root = Path(project_root).resolve()
+    target = root / file_path
+    if not target.exists():
+        collision = _id_collision_wall(root, code, file_path)
+        if collision:
+            return collision
+    result = await handle_implement(
         project_root, spec_name, task_ids=task_ids, code=code, file_path=file_path,
         attempt=attempt, previous_diagnostics=previous_diagnostics,
     )
+    if isinstance(result, dict):
+        archaeology = _fixture_archaeology(root, file_path, code)
+        if archaeology:
+            result["fixture_archaeology"] = archaeology
+    return result
 
 
 async def handle_implement_alias(**kwargs: Any) -> Dict[str, Any]:

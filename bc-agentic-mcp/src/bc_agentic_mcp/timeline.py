@@ -78,6 +78,11 @@ _PHASE_LABEL = {
     "review_comments_open": "PR review comments open — rework loop",
     "merged": "PR merged",
     "archived": "Archived",
+    # Refinement lab (intake tier) — wiring audit 2026-07-05: unlabeled phases
+    # rendered as raw ids in TIMELINE.md for intake items.
+    "intake_started": "Intake started — raw material collected",
+    "intake_analyzed": "Intake analyzed — dossier built",
+    "intake_graduated": "Intake graduated — delivery lane assigned",
     "feature_captured": "Feature tree captured (all children, fresh)",
     "feature_refined": "Feature refined — claims confronted with code reality",
     "feature_planned": "Feature plan generated (facts + wave narrative)",
