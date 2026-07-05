@@ -598,6 +598,15 @@ def create_server(project_root: Optional[str] = None) -> FastMCP:
 
         _threading.Thread(target=_warm_index, name="bc-index-warmup", daemon=True).start()
 
+        def _warm_team_lessons() -> None:
+            try:
+                from bc_agentic_mcp import team_lessons
+                team_lessons.sync_pull()  # clone-or-pull + push stranded commits; offline-safe
+            except Exception:
+                pass
+
+        _threading.Thread(target=_warm_team_lessons, name="bc-team-lessons-sync", daemon=True).start()
+
     mcp = FastMCP("bc-agentic-mcp")
 
     # -----------------------------------------------------------------------

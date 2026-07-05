@@ -10,6 +10,11 @@ async def handle_lessons(project_root: str, write_file: bool = False) -> Dict[st
     """Return the lessons summary; optionally write SUMMARY.md."""
     root = Path(project_root).resolve()
     result: Dict[str, Any] = {"summary": lessons_store.summarize_lessons(root)}
+    try:
+        from bc_agentic_mcp import team_lessons
+        result["team"] = team_lessons.status()
+    except Exception:
+        pass
     if write_file:
         path = specs_root(root) / ".lessons" / "SUMMARY.md"
         path.parent.mkdir(parents=True, exist_ok=True)

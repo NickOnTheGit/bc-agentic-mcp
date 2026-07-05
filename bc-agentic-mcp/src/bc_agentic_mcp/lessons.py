@@ -111,7 +111,30 @@ def load_lessons(root: Path) -> List[Dict[str, Any]]:
 
 
 def load_global_lessons() -> List[Dict[str, Any]]:
-    return _load_json_list(_global_path())
+    """Cross-project lessons: the local file UNION the team store (if configured).
+
+    The team layer is invisible to consumers — same shape, deduped on
+    (signature, message) with local lessons winning ties. This is the single
+    read door; wiring the union here means applicable_lessons/BM25 ranking and
+    every other consumer learn from teammates with zero changes.
+    """
+    local = _load_json_list(_global_path())
+    try:
+        from bc_agentic_mcp import team_lessons
+        team = team_lessons.load_team_lessons() if team_lessons.enabled() else []
+    except Exception:
+        team = []  # the shared layer must never break local operation
+    if not team:
+        return local
+    seen = {(l.get("signature"), l.get("message")) for l in local}
+    out = list(local)
+    for lesson in team:
+        key = (lesson.get("signature"), lesson.get("message"))
+        if key in seen:
+            continue
+        seen.add(key)
+        out.append(lesson)
+    return out
 
 
 def record_global_lesson(
@@ -146,6 +169,15 @@ def record_global_lesson(
     lessons.append(lesson)
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(lessons, indent=2), encoding="utf-8")
+    # Tee into the team store (best-effort): promotions AND reflection-distilled
+    # mistakes flow to every teammate through this single write door.
+    try:
+        from bc_agentic_mcp import team_lessons
+        if team_lessons.enabled():
+            shared = team_lessons.append_team_lesson(lesson)
+            lesson["team"] = {k: shared[k] for k in ("recorded", "pushed", "deduped") if k in shared}
+    except Exception:
+        pass  # sharing is a bonus, never a failure mode
     return lesson
 
 
