@@ -207,15 +207,22 @@ def pr_changed_paths(
 
 
 def distill_item(paths: List[str]) -> Dict[str, Any]:
-    """One precedent's delivery shape from its changed paths. Pure + deterministic."""
+    """One precedent's delivery shape from its changed paths. Pure + deterministic.
+
+    top_dirs counts AL files ONLY (retro-test finding, 2026-07-05: one outlier PR
+    with 977 web-test files drowned the whole dirs histogram — the delivery shape
+    must describe WHERE THE AL LIVES, not every artifact a PR dragged along).
+    """
     kinds: Dict[str, int] = {}
     dirs: Dict[str, int] = {}
+    al_files = 0
     has_upgrade = touched_tests = touched_xlf = touched_permissions = False
     for path in paths:
         low = path.replace("\\", "/").lower()
         kind = classify_path(path)
         if kind:
             kinds[kind] = kinds.get(kind, 0) + 1
+            al_files += 1
         if kind == "PermissionSet":
             touched_permissions = True
         if "upgrade" in low.rsplit("/", 1)[-1] and low.endswith("codeunit.al"):
@@ -224,12 +231,14 @@ def distill_item(paths: List[str]) -> Dict[str, Any]:
             touched_tests = True
         if low.endswith(".xlf"):
             touched_xlf = True
-        parts = [p for p in low.split("/") if p]
-        if len(parts) > 1:
-            top = "/".join(parts[:2])
-            dirs[top] = dirs.get(top, 0) + 1
+        if kind:
+            parts = [p for p in low.split("/") if p]
+            if len(parts) > 1:
+                top = "/".join(parts[:2])
+                dirs[top] = dirs.get(top, 0) + 1
     return {
         "files_changed": len(paths),
+        "al_files": al_files,
         "object_kinds": sorted(kinds.items(), key=lambda kv: (-kv[1], kv[0])),
         "top_dirs": sorted(dirs.items(), key=lambda kv: (-kv[1], kv[0]))[:5],
         "has_upgrade_codeunit": has_upgrade,

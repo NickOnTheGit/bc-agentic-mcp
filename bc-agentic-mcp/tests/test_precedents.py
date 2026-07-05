@@ -131,6 +131,19 @@ def test_classify_path_suffix_precedence():
     assert precedents.classify_path("a/Weird.al") == "OtherAL"
 
 
+def test_top_dirs_count_al_files_only():
+    """Retro-test finding (218219): 977 web-test files drowned the dirs histogram.
+    Non-AL paths still count in files_changed/flags but never in top_dirs."""
+    paths = (
+        [f"/cdsa.testing.web/pages/Page{i}.cs" for i in range(50)]
+        + ["/extensions/BaseApp/src/Housing/Contract.Table.al"]
+    )
+    shape = precedents.distill_item(paths)
+    assert shape["files_changed"] == 51
+    assert shape["al_files"] == 1
+    assert shape["top_dirs"] == [("extensions/baseapp", 1)]
+
+
 def test_mined_empty_is_still_evidence(tmp_path):
     """Zero similar items is a valid, gate-opening answer."""
     payload = {"mined": True, "precedents": [], "delivery_shape": {"based_on": 0},
