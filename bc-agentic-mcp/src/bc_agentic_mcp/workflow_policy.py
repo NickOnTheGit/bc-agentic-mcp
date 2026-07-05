@@ -63,6 +63,7 @@ PLANNER_TOOLS = {
     "bc_init",
     "bc_analyze_module",
     "bc_capture_item_context",
+    "bc_mine_precedents",
     "bc_clarify",
     "bc_answer_clarification",
     "bc_auto_clarify",

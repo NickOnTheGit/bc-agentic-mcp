@@ -54,6 +54,7 @@ def test_all_sixteen_tools_registered():
         "bc_extract_references",
         "bc_fetch_wiki",
         "bc_capture_item_context",
+        "bc_mine_precedents",
         "bc_check_permission_coverage",
         "bc_reflect",
         "bc_guard_pr_thread_resolution",
@@ -72,7 +73,7 @@ def test_all_sixteen_tools_registered():
         "_health",
     }
     assert expected <= tool_names
-    assert len(tool_names) == 71
+    assert len(tool_names) == 72
 
 @pytest.mark.asyncio
 async def test_bc_init_creates_specs_dir(tmp_path):

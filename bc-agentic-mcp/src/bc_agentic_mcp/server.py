@@ -1691,6 +1691,30 @@ def create_server(project_root: Optional[str] = None) -> FastMCP:
             page_id=page_id, pat_env=pat_env,
         )
 
+    @mcp.tool(name="bc_mine_precedents")
+    async def bc_mine_precedents(
+        spec_name: str,
+        work_item_id: Optional[str] = None,
+        item_type: Optional[str] = None,
+        title: Optional[str] = None,
+        top_k: int = 5,
+        skip: bool = False,
+        reason: Optional[str] = None,
+        org_url: Optional[str] = None,
+        project: Optional[str] = None,
+        pat_env: str = "AZURE_DEVOPS_EXT_PAT",
+        project_root: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """Mine ADO history for how items LIKE this one were delivered (similar items -> PRs -> changed paths -> delivery shape). REQUIRED before bc_plan_design; skip=true+reason records an audited waiver."""
+        from bc_agentic_mcp.tools.mine_precedents import handle_mine_precedents
+        return await _run_tool(
+            "bc_mine_precedents", handle_mine_precedents,
+            project_root=project_root or str(_get_ctx().config.project_root),
+            spec_name=spec_name, work_item_id=work_item_id, item_type=item_type,
+            title=title, top_k=top_k, skip=skip, reason=reason,
+            org_url=org_url, project=project, pat_env=pat_env,
+        )
+
     @mcp.tool(name="bc_capture_item_context")
     async def bc_capture_item_context(
         spec_name: str,

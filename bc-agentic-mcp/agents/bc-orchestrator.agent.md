@@ -156,6 +156,13 @@ Ordered phases (see `src/bc_agentic_mcp/timeline.py`, `AGENTS.md`, and the two d
 
 1. `bc_capture_item_context` — FRESH context bundle first (description, every linked wiki via
    REST+PAT, every related item). Never memory / stale clone / convention inference.
+1b. `bc_mine_precedents` — how were items LIKE this one delivered before? Mines ADO history
+   (similar closed items -> their PRs -> changed paths -> delivery shape: object kinds,
+   upgrade-codeunit/permission/test/xlf rates). ENFORCED: `bc_plan_design` fail-closes
+   with `blocked_precedents_due` for ADO-backed specs until the mined result (even "no
+   similar items") or an explicit `skip=true` + `reason` waiver is recorded. Hold the
+   spec's objects against `delivery_shape` — a missing upgrade codeunit or permission
+   entry that 80% of precedents carried is a question, not a coincidence.
 2. `bc_clarify` (Path A) — generate clarification questions when intent is ambiguous.
    Answer them via `bc_answer_clarification` (or the `next_action` tool), **not** by hand-editing.
    `bc_write_spec` is gated until `bc_status` shows `enforcement.clarifications.ok == true`.

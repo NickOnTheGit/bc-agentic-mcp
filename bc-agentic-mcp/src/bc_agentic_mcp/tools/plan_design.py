@@ -72,6 +72,29 @@ async def handle_plan_design(
             "adrs": [],
         }
 
+    # PRECEDENTS WALL (2026-07-05): an ADO-backed item may not be designed blind to
+    # how items LIKE it were delivered before. Evidence = context/precedents.json
+    # (mined result — even empty — or an explicit reasoned skip). Specs without a
+    # captured ADO identity (non-ADO work, fixtures) are exempt: no history to mine.
+    from bc_agentic_mcp import item_context as _item_context
+    from bc_agentic_mcp import precedents as _precedents
+    _ctx = _item_context.load_context(str(root), spec_name) or {}
+    _identity = _ctx.get("identity") or {}
+    if _identity.get("type") and _identity.get("title"):
+        _evidence = _precedents.evidence_status(root, spec_name)
+        if not _evidence.get("present"):
+            return {
+                "status": "blocked_precedents_due",
+                "blocked": True,
+                "reason": ("design requires delivery precedents for this item type "
+                           "(or an explicit skip with a reason) — mine how similar "
+                           f"{_identity.get('type', 'item')}s were actually shipped first"),
+                "next_action": {"tool": "bc_mine_precedents",
+                                "params_hint": {"spec_name": spec_name}},
+                "design_path": None,
+                "adrs": [],
+            }
+
     # Fail-closed: do not emit a generic design from an ungrounded spec.
     if spec.get("status") == "needs_grounding":
         return {
