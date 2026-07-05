@@ -461,6 +461,12 @@ async def _run_tool(tool_name: str, handler, session_id: str = "default", **kwar
         timeline.record_tool_phase(kwargs.get("project_root"), kwargs.get("spec_name"), tool_name, result)
         base_dir = Path(kwargs.get("project_root") or str(_get_ctx().config.project_root)).resolve()
         result = _cap_large_outputs(result, kwargs.get("project_root"), kwargs.get("spec_name"), tool_name)
+        # Context-loss armor: oversized results are persisted verbatim to the item's
+        # artifacts/ (+ timeline checkpoint), so a compacted agent re-READS instead of
+        # re-RUNNING expensive tools or fabricating from half-memory.
+        from bc_agentic_mcp import context_recovery
+        result = context_recovery.persist_result(
+            result, kwargs.get("project_root"), kwargs.get("spec_name"), tool_name)
         result = _apply_envelope(result, kwargs)
         # Timer on every tool: the response itself reports what it cost, so slow steps
         # are visible at the call site instead of being discovered by wall-clock pain.

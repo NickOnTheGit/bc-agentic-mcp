@@ -93,6 +93,19 @@ Enforcement is layered, and the layers differ by host:
 3. If no workspace/repo context is available but the task needs it, STOP and ask the user to
    open the BC repository first — do not proceed on inferred context.
 
+## Context-loss recovery (the disk IS the memory)
+If your context was compacted/truncated mid-item (you half-remember tool outputs, or the
+conversation seems to restart), do NOT re-run expensive tools to re-see their results and
+NEVER reconstruct them from memory. Recover from disk:
+1. `bc_status` with `spec_name` — its `timeline` is the item's story so far and `on_disk`
+   maps every recoverable file (key lifecycle files + newest `artifacts/` + `logs/`).
+2. Any tool response >16KB was auto-persisted verbatim to `.specs/<item>/artifacts/`
+   (announced in the timeline as a 💾 event and pointed to by the response's `recovery`
+   key). READ that file instead of re-running the tool — container runs and ADO calls
+   are never a way to refresh your memory.
+3. Re-state the Charter purpose (every spec-scoped response re-injects it as `reanchor`)
+   before resuming from `bc_status.next_actions`.
+
 ## Entry routing (pick the path from the request)
 - **Path A — Requirements/email/PBI -> spec (planning).** The request is raw intent (an email,
   a story, "make a spec", refinement). Lifecycle: `capture -> clarify -> write_spec ->

@@ -40,6 +40,21 @@ async def handle_status(
                 result["human_blockers"] = blockers_plain
         except Exception:
             pass
+        # Context-loss recovery surface: bc_status is the prescribed when-in-doubt
+        # call, so it must hand a compacted agent everything needed to resume from
+        # DISK: the timeline story (even pre-charter) + a map of what exists on disk.
+        try:
+            from bc_agentic_mcp import timeline as _timeline
+            tl = _timeline.digest(root, spec_name, limit=10)
+            if tl:
+                result.setdefault("timeline", tl)
+        except Exception:
+            pass
+        try:
+            from bc_agentic_mcp import context_recovery
+            result["on_disk"] = context_recovery.disk_map(root, spec_name)
+        except Exception:
+            pass
         return result
 
     completed = sum(1 for s in specs.values() if s.get("phase") == "closed")

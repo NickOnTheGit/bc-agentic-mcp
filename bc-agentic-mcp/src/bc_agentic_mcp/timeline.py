@@ -56,7 +56,7 @@ TOOL_PHASE: Dict[str, str] = {
 }
 
 # Checkpoint kinds that make up the human timeline narrative (phase events + notable signals).
-_NARRATIVE_KINDS = {"phase", "milestone", "mistake", "correction", "gate", "decision", "reflection", "override"}
+_NARRATIVE_KINDS = {"phase", "milestone", "mistake", "correction", "gate", "decision", "reflection", "override", "artifact"}
 
 _PHASE_LABEL = {
     "item_received": "Item received — timeline started",
@@ -254,7 +254,8 @@ def _render_timeline_md(spec_name: str, events: List[Dict[str, Any]]) -> str:
         kind = e.get("kind", "")
         summary = e.get("summary", "")
         marker = {"phase": "▶", "mistake": "✗", "correction": "↺", "gate": "⛔",
-                  "decision": "✓", "reflection": "★", "override": "!", "milestone": "●"}.get(kind, "•")
+                  "decision": "✓", "reflection": "★", "override": "!", "milestone": "●",
+                  "artifact": "💾"}.get(kind, "•")
         line = f"- `{ts}` {marker} **{summary}**"
         artifacts = e.get("details", {}).get("artifacts") or []
         if artifacts:
