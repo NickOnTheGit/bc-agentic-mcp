@@ -704,6 +704,22 @@ def _clarification_answer(specs_dir: Path, question_id: str) -> str:
     return ""
 
 
+def _answered_question_ids(specs_dir: Path) -> List[str]:
+    """All question ids in clarifications.md that carry a non-empty answer, in file order."""
+    clar = specs_dir / "clarifications.md"
+    if not clar.exists():
+        return []
+    try:
+        text = clar.read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return []
+    ids = []
+    for qid in dict.fromkeys(re.findall(r"\b(Q-\d+)\b", text)):
+        if _clarification_answer(specs_dir, qid):
+            ids.append(qid)
+    return ids
+
+
 def _run_git(root: Path, *args: str, timeout: int = 15) -> Optional[str]:
     try:
         result = subprocess.run(
@@ -1499,6 +1515,27 @@ async def handle_prepare_review(
                 "file_path": str(clar_path),
             }
 
+    # ANSWER CONSUMPTION (e2e walk finding 2026-07-05, Q-901 livelock): an answered
+    # clarification is spec INPUT, not a checkbox. The old flow validated the answer,
+    # recorded it, then regenerated the spec from the ORIGINAL bullets — the same
+    # quality-gate failure returned the same question forever, and an agent obeying
+    # the machine span in place. Fold every recorded answer into the bullets so the
+    # generator actually sees what the human said. Embedded 'TEST <shape>:' phrases
+    # are split onto their own lines for the line-anchored shape parser.
+    _answers_dir = specs_root(root) / spec_name
+    _test_decl = re.compile(r"\s*(?=TEST\s+(?:happy|negative|edge|regression|api)\s*:)", re.IGNORECASE)
+    _folded: List[str] = []
+    for _qid in _answered_question_ids(_answers_dir):
+        _ans = _clarification_answer(_answers_dir, _qid)
+        if not _ans.strip():
+            continue
+        for _line in _test_decl.split(_ans.strip()):
+            if _line.strip():
+                _folded.append(_line.strip())
+    if _folded:
+        human_bullets = human_bullets + "\n\nClarification answers (authoritative):\n" + "\n".join(
+            f"- {a}" for a in _folded)
+
     spec_result = await handle_write_spec(
         project_root=str(root),
         spec_name=spec_name,
@@ -1774,14 +1811,23 @@ async def handle_prepare_review(
                 }
             ]
         else:
+            # MASKED-FAILURE LIVELOCK FIX (e2e walk 2026-07-05): the gate knew exactly
+            # what was wrong (e.g. 'declare TEST negative/edge lines') but asked a
+            # GENERIC file-list question — answering it could never fix the failure,
+            # so agents obeying the machine span forever. The question must carry the
+            # ACTUAL failures; the answer is folded into the bullets on the next run.
+            failure_lines = "\n".join(f"  - {f}" for f in quality_gate.get("failures", [])[:6]) \
+                or "  - (no failure detail — report this as a bug)"
             questions = [
                 {
                     "id": "Q-901",
                     "question": (
-                        "The planner could not pin down exactly which files this item changes. "
-                        "Please list the exact .al files (relative paths) that should be in scope — "
-                        "or, if this is not an API item, say so and name the files anyway. "
-                        "The scope fence is built from your answer."
+                        "The plan quality gate failed with these exact findings:\n"
+                        f"{failure_lines}\n"
+                        "Answer this question with the missing information stated as spec "
+                        "bullets (for example 'TEST negative: …' / 'TEST edge: …' lines, or "
+                        "the exact .al file paths in scope). Your answer is folded into the "
+                        "spec input verbatim and the packet regenerates from it."
                     ),
                     "type": "text",
                 }

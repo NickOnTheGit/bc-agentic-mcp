@@ -62,7 +62,12 @@ def classify(text: str) -> List[str]:
     add("api", bool(re.search(r"\bapi\b|entityname|extend (the )?api|odata", t)))
     add("table-field", bool(re.search(r"\b(add|new)\b[^.]*\bfield\b[^.]*\btable\b|\bfield\b[^.]*\bto (the )?table\b", t)))
     add("page", bool(re.search(r"\bon (the )?page\b|show[^.]*\bon\b[^.]*\bpage\b|\bpage\b.*\bfield\b", t)))
-    add("upgrade", bool(re.search(r"\bupgrade\s*codeunit\b|\bdata upgrade\b|\bupgradecodeunit\b|populate[^.]*existing", t)))
+    # Negation-aware (e2e walk finding 2026-07-05): "No data upgrade." tagged the
+    # spec as upgrade work, and the contract validator then demanded an upgrade
+    # contract for work the item explicitly excluded.
+    add("upgrade", bool(
+        _affirmative_mentions(t, r"\bupgrade\s*codeunit\b|\bdata upgrade\b|\bupgradecodeunit\b")
+        or re.search(r"populate[^.]*existing", t)))
     add("enum", bool(re.search(r"\benum(extension)?\b", t)))
     add("report", bool(re.search(r"\breport\b", t)))
     add("permission", bool(re.search(r"\bpermission set\b|\bpermissionset\b|\btabledata\b", t)))
@@ -72,6 +77,19 @@ def classify(text: str) -> List[str]:
         r"\b(remove|delete|decommission)\b[^.]{0,80}\b(codeunit|enum ?(value)?|feature|page|table|field|report|job queue)\b"
         r"|\bnot needed anymore\b|\bno longer (needed|used|visible)\b", t)))
     return types or ["unknown"]
+
+
+_NEGATED_BEFORE = re.compile(
+    r"\b(?:no|not|without|never|zonder|geen)\b[\s\w]{0,16}$", re.IGNORECASE)
+
+
+def _affirmative_mentions(text: str, pattern: str) -> List["re.Match"]:
+    """Matches of ``pattern`` NOT preceded by a nearby negation — 'No data upgrade.'
+    is an exclusion statement, not a work request. Deterministic window of 28 chars."""
+    return [
+        m for m in re.finditer(pattern, text, re.IGNORECASE)
+        if not _NEGATED_BEFORE.search(text[max(0, m.start() - 28):m.start()])
+    ]
 
 
 # ---------------------------------------------------------------------------
@@ -230,7 +248,9 @@ def extract_objects(text: str) -> List[Dict[str, Any]]:
         })
 
     # Upgrade codeunit is often described without a name ("a data upgrade codeunit").
-    if re.search(r"\bupgrade\s*codeunit\b|\bdata upgrade\b", text, re.IGNORECASE) \
+    # NEGATION-AWARE (e2e walk finding 2026-07-05): "No data upgrade." must not spawn
+    # a phantom upgrade codeunit — the ungroundable ghost deadlocked spec grounding.
+    if _affirmative_mentions(text, r"\bupgrade\s*codeunit\b|\bdata upgrade\b") \
             and not any(o["kind"] == "codeunit" for o in objects):
         objects.append({"kind": "codeunit", "name": None, "id": None,
                          "action": "create", "subtype": "upgrade"})

@@ -1,8 +1,8 @@
 {
   "agents/bc-implementer.agent.md": "434eda51660369b8",
   "agents/bc-orchestrator.agent.md": "fec1cd0a2db9e561",
-  "agents/bc-refiner.agent.md": "4c0a384afffc9aeb",
-  "agents/bc-reviewer.agent.md": "ae1d322b2b6a6c86",
+  "agents/bc-refiner.agent.md": "2e6281869ed477dd",
+  "agents/bc-reviewer.agent.md": "10d0bdc5b25f10db",
   "src/bc_agentic_mcp/prompts/clarifier.md": "ab36dd573a0547eb",
   "src/bc_agentic_mcp/prompts/designer.md": "6f7c53c1b8ecc975",
   "src/bc_agentic_mcp/prompts/implementer.md": "bcac11844b9b6d5a",
