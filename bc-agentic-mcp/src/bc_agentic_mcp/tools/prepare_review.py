@@ -684,7 +684,14 @@ def _git_root(start: Path) -> Optional[Path]:
 
 
 def _clarification_answer(specs_dir: Path, question_id: str) -> str:
-    """Return the recorded answer for a clarification question ('' if unanswered)."""
+    """Return the recorded answer for a clarification question ('' if unanswered).
+
+    Answers are MULTI-LINE (Gemini-Flash run, 2026-07-06): everything from the
+    `_Answer:_` marker to the next `## ` heading belongs to the answer — the old
+    first-line-only read hid evidence and TEST-shape declarations from every
+    consumer (validator, answer-folding), recreating the livelock for natural
+    multi-line answers.
+    """
     clar = specs_dir / "clarifications.md"
     if not clar.exists():
         return ""
@@ -693,15 +700,25 @@ def _clarification_answer(specs_dir: Path, question_id: str) -> str:
     except OSError:
         return ""
     in_section = False
+    capturing = False
+    collected: List[str] = []
     for line in lines:
         if line.startswith("## "):
+            if capturing:
+                break
             in_section = question_id in line
             continue
-        if in_section:
-            m = re.match(r"^_Answer:_\s*(.*)$", line.strip())
-            if m:
-                return m.group(1).strip()
-    return ""
+        if not in_section:
+            continue
+        m = re.match(r"^_Answer:_\s*(.*)$", line.strip())
+        if m:
+            capturing = True
+            if m.group(1).strip():
+                collected.append(m.group(1).strip())
+            continue
+        if capturing and line.strip():
+            collected.append(line.strip())
+    return "\n".join(collected).strip()
 
 
 def _answered_question_ids(specs_dir: Path) -> List[str]:

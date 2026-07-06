@@ -25,7 +25,7 @@ import sys
 import time
 from pathlib import Path
 from bc_agentic_mcp.workspace import ENV_VAR as specs_env, specs_root
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Union
 
 from mcp.server.fastmcp import FastMCP
 
@@ -1775,7 +1775,7 @@ def create_server(project_root: Optional[str] = None) -> FastMCP:
     @mcp.tool(name="bc_capture_item_context")
     async def bc_capture_item_context(
         spec_name: str,
-        work_item_id: str,
+        work_item_id: Union[str, int],
         description: Optional[str] = None,
         org_url: Optional[str] = None,
         project: Optional[str] = None,
@@ -1787,7 +1787,9 @@ def create_server(project_root: Optional[str] = None) -> FastMCP:
             "bc_capture_item_context", handle_capture_item_context,
             project_root=project_root or str(_get_ctx().config.project_root),
             spec_name=spec_name,
-            work_item_id=work_item_id,
+            # AI-friendly coercion (GPT-5-mini run, 2026-07-06): a numeric id IS a
+            # number to a weak model — rejecting int with a pydantic error is hostile.
+            work_item_id=str(work_item_id),
             description=description,
             org_url=org_url,
             project=project,

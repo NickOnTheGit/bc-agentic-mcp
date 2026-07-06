@@ -304,6 +304,16 @@ def _quality_check_sync(
         "spec_name": spec_name,
         "mode": mode,
         "available": mode != "self",
+        # A bare false confused a weak model (GPT-5-mini run, 2026-07-06): say WHY
+        # and what it means for trust in the diagnostics.
+        **({} if mode != "self" else {
+            "available_reason": (
+                "AL compiler analyzers (CodeCop/UICop…) are not installed in this "
+                "workspace — diagnostics below come from the self-contained validator "
+                "only, which covers fewer rules. Install the AL extension or run in a "
+                "prepared worktree for full analyzer coverage."
+            ),
+        }),
         "analyzers": collected.get("analyzers", []),
         "sources": collected.get("sources", {}),
         "errors": len(errors),

@@ -327,6 +327,38 @@ def test_amnesiac_resumes_from_status_alone(sim):
 
 
 # ---------------------------------------------------------------------------
+# PERSONA: the Natural Writer — multi-line answers must not lose their evidence
+# ---------------------------------------------------------------------------
+
+def test_multiline_answer_evidence_is_seen(sim):
+    """LIVE Gemini-Flash finding (2026-07-06): a natural multi-line answer carried
+    .al evidence on line 3, but both answer parsers read ONLY the first line —
+    'answer lacks AL file evidence' for an answer that had it, a prescription loop
+    (follow the instruction -> same refusal)."""
+    h, spec, root = sim, "nat-1", str(sim.root)
+    _bootstrap_item(h, spec)
+    multiline = ("TEST negative: a facility without addresses shows 0.\n"
+                 "TEST edge: max addresses renders unclipped.\n"
+                 "Evidence: extensions/BaseApp/src/FacilitiesOfRealtyObject.Page.al")
+    out = h.call("bc_answer_clarification", project_root=root, spec_name=spec,
+                 answers={"Q-901": multiline})
+    # Whether or not Q-901 pre-exists, the write path must validate the FULL text.
+    issues = [i for i in (out.get("issues") or []) if "lacks AL file evidence" in str(i)]
+    assert not issues, f"multi-line evidence was not seen: {issues}"
+    # And the engine that gates the lifecycle must agree with the write-path.
+    from bc_agentic_mcp import enforcement
+    clar = h.root / ".specs" / spec / "clarifications.md"
+    clar.write_text(
+        "# Clarifications for: nat-1\n\n## Q-901: test shapes?\n_Answer:_ TEST negative: zero case.\n"
+        "TEST edge: max case.\nEvidence: extensions/BaseApp/src/FacilitiesOfRealtyObject.Page.al\n"
+        "\n## Deterministic Quality Gate Failures\n\n- some dump\n",
+        encoding="utf-8")
+    status = enforcement.engine_status(h.root, spec)["engines"]["clarifications"]
+    assert status["ok"] is True, f"engine still blind to multi-line evidence: {status}"
+    assert h.all_findings() == [], "\n".join(h.all_findings())
+
+
+# ---------------------------------------------------------------------------
 # PERSONA: the Self-Approver — confusion + escape hatch must NOT bypass humans
 # ---------------------------------------------------------------------------
 
@@ -345,6 +377,39 @@ def test_agent_cannot_override_human_gate_alone(sim):
     blob = json.dumps(out, default=str).lower()
     assert "human" in blob and "confirm_human" in blob
     assert h.all_findings() == [], "\n".join(h.all_findings())
+
+
+# ---------------------------------------------------------------------------
+# REPO-BOUNDARY GUARD: the machine must never mutate an ENCLOSING repository
+# ---------------------------------------------------------------------------
+
+def test_non_repo_project_root_never_reaches_enclosing_repo(tmp_path):
+    """LIVE collateral (Haiku run, 2026-07-06): the sandbox was not a git repo, git
+    resolved the ENCLOSING Brain repo, and the machine's 'commit or stash' advice
+    made the agent stash an unrelated repo's work-in-progress. Now: a non-repo root
+    passes clean-latest with an explicit note, and stash/pull REFUSE outright."""
+    import subprocess
+    from bc_agentic_mcp import repo_state
+    enclosing = tmp_path / "outer"
+    project = enclosing / "inner-project"
+    project.mkdir(parents=True)
+    subprocess.run(["git", "init", "--quiet", str(enclosing)], check=True)
+    (enclosing / "wip.txt").write_text("precious work-in-progress", encoding="utf-8")
+
+    st = repo_state.status(str(project))
+    assert st["is_repo"] is False
+    assert st["enclosing_repo"] and st["enclosing_repo"].endswith("outer")
+
+    check = repo_state.is_clean_latest(str(project))
+    assert check["ok"] is True  # nothing of OURS can be stale
+    assert "never be committed/stashed" in check["note"]
+
+    stashed = repo_state.stash(str(project))
+    assert stashed["stashed"] is False and "refused" in stashed["output"]
+    pulled = repo_state.make_latest(str(project))
+    assert pulled["pulled"] is False and "refused" in pulled["output"]
+    # The enclosing repo's WIP is untouched.
+    assert (enclosing / "wip.txt").read_text(encoding="utf-8") == "precious work-in-progress"
 
 
 # ---------------------------------------------------------------------------

@@ -29,12 +29,29 @@ def _default_runner(args: Sequence[str], cwd: str) -> Tuple[int, str, str]:
 
 
 def status(root: str, runner: Optional[Runner] = None) -> Dict[str, Any]:
-    """Return branch / dirty files / ahead / behind for the repo at ``root``."""
+    """Return branch / dirty files / ahead / behind for the repo at ``root``.
+
+    REPO-BOUNDARY GUARD (live weak-model collateral, 2026-07-06): when ``root`` is
+    not itself a git repo, git silently resolves the ENCLOSING repo — the machine
+    then diagnosed the WRONG repository's dirt and its 'commit or stash' advice made
+    an agent stash an unrelated repo's work-in-progress. If the git toplevel is not
+    ``root``, this is NOT our repo: report is_repo=false and never its state.
+    """
     run = runner or _default_runner
     r = str(root)
 
     def git(*a: str) -> Tuple[int, str, str]:
         return run(["git", *a], r)
+
+    rc_top, toplevel, _ = git("rev-parse", "--show-toplevel")
+    top_resolved = Path(toplevel.strip()).resolve() if (rc_top == 0 and toplevel.strip()) else None
+    if top_resolved is None or top_resolved != Path(r).resolve():
+        return {
+            "is_repo": False,
+            "enclosing_repo": str(top_resolved) if top_resolved else None,
+            "branch": "", "dirty": False, "dirty_files": [],
+            "has_upstream": False, "upstream": None, "ahead": 0, "behind": 0,
+        }
 
     _, branch, _ = git("rev-parse", "--abbrev-ref", "HEAD")
     # Tracked-only: skip the (expensive) untracked-file tree walk on large repos. Untracked build
@@ -52,6 +69,7 @@ def status(root: str, runner: Optional[Runner] = None) -> Dict[str, Any]:
             if len(parts) == 2:
                 ahead, behind = int(parts[0]), int(parts[1])
     return {
+        "is_repo": True,
         "branch": branch.strip(),
         "dirty": bool(dirty_files),
         "dirty_files": dirty_files,
@@ -65,8 +83,20 @@ def status(root: str, runner: Optional[Runner] = None) -> Dict[str, Any]:
 def is_clean_latest(
     root: str, runner: Optional[Runner] = None, ignore_prefixes: Optional[List[str]] = None,
 ) -> Dict[str, Any]:
-    """Is the repo clean AND up to date? ``.specs/`` (our own artifacts) is never 'dirty'."""
+    """Is the repo clean AND up to date? ``.specs/`` (our own artifacts) is never 'dirty'.
+
+    A project root that is NOT its own git repo passes with an explicit note: there
+    is no VCS state of OURS to be stale, and prescribing 'commit or stash' would
+    target the enclosing repository (the exact collateral observed live).
+    """
     st = status(root, runner)
+    if st.get("is_repo") is False:
+        note = ("project root is not a git repository"
+                + (f" (enclosed in {st['enclosing_repo']} — which is NOT this project's "
+                   "repo and must never be committed/stashed by this machine)"
+                   if st.get("enclosing_repo") else ""))
+        return {"ok": True, "reasons": [], "status": st, "blocking_dirty": [],
+                "note": note}
     ignore = tuple(ignore_prefixes or []) + (".specs/", ".specs\\")
     blocking = [f for f in st["dirty_files"] if not f.startswith(ignore)]
     reasons: List[str] = []
@@ -78,7 +108,10 @@ def is_clean_latest(
 
 
 def make_latest(root: str, runner: Optional[Runner] = None) -> Dict[str, Any]:
-    """Reversible: fast-forward pull only (fails cleanly if a merge would be required)."""
+    """Reversible: fast-forward pull only (fails cleanly if a merge would be required).
+    Refuses when ``root`` is not its own repo — never pull the enclosing repository."""
+    if status(root, runner).get("is_repo") is False:
+        return {"pulled": False, "output": "refused: project root is not its own git repository"}
     run = runner or _default_runner
     rc, out, err = run(["git", "pull", "--ff-only"], str(root))
     return {"pulled": rc == 0, "output": (out + err).strip()}
@@ -86,7 +119,13 @@ def make_latest(root: str, runner: Optional[Runner] = None) -> Dict[str, Any]:
 
 def stash(root: str, runner: Optional[Runner] = None,
           message: str = "bc-agentic code-context autostash") -> Dict[str, Any]:
-    """Reversible cleaning: stash dirty changes (restore later with `git stash pop`)."""
+    """Reversible cleaning: stash dirty changes (restore later with `git stash pop`).
+    Refuses when ``root`` is not its own repo — a stash would hit the ENCLOSING repo
+    and mutate an unrelated project's work-in-progress (observed live 2026-07-06)."""
+    if status(root, runner).get("is_repo") is False:
+        return {"stashed": False,
+                "output": "refused: project root is not its own git repository — "
+                          "stashing would mutate the enclosing repo"}
     run = runner or _default_runner
     rc, out, err = run(["git", "stash", "push", "-u", "-m", message], str(root))
     return {"stashed": rc == 0, "output": (out + err).strip()}

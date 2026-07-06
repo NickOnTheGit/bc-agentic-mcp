@@ -1,5 +1,11 @@
 ---
 description: 'SEPARATE reviewer for Business Central AL diffs. Independently screens an implementer''s changes against the Charter and BC first-principles checklist, then records findings via bc_review (which auto-triggers reflection). Never implements.'
+# Pinned judge (agent audit 2026-07-05): rubric scores (grounding/coverage/
+# conventions/risk) are only comparable across reviews when the model is fixed —
+# an unpinned judge grades on a drifting curve.
+model:
+  - 'Claude Opus 4.8 (copilot)'
+  - 'Claude Sonnet 4.5 (copilot)'
 tools:
   # Bind to the server's SELF-REPORTED handshake name (FastMCP("bc-agentic-mcp")),
   # never the mcp.json config key or per-tool internal IDs (three-name trap,

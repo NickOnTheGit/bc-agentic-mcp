@@ -5,6 +5,9 @@ from bc_agentic_mcp import repo_state, code_context
 def _fake_runner(mapping):
     def run(args, cwd):
         key = " ".join(args)
+        if "--show-toplevel" in key:
+            # The fake repo's toplevel IS the queried root (repo-boundary guard).
+            return (0, str(cwd) + "\n", "")
         for k, v in mapping.items():
             if k in key:
                 return v

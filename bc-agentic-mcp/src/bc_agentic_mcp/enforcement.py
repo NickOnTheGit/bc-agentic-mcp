@@ -67,7 +67,17 @@ def _timeline_status(root: Path, spec: str) -> Dict[str, Any]:
 def _traceability_status(sdir: Path) -> Dict[str, Any]:
     spec_path = sdir / "spec.json"
     if not spec_path.exists():
-        return {"ran": False, "ok": False, "reason": "no spec.json (write the spec first)"}
+        # Weak-model finding (GPT-5-mini run, 2026-07-06): this branch carried no
+        # next_action, so the agent had to discover bc_write_spec's required params
+        # (human_bullets, idempotency_key) by trial and error.
+        return {"ran": False, "ok": False, "reason": "no spec.json (write the spec first)",
+                "next_action": {
+                    "tool": "bc_write_spec",
+                    "reason": "Generate the spec — traceability is computed from spec.json",
+                    "params_hint": {"spec_name": sdir.name,
+                                    "human_bullets": "<requirement bullets>",
+                                    "idempotency_key": "<unique-key>"},
+                }}
     try:
         spec_json = json.loads(spec_path.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError) as exc:
@@ -212,16 +222,29 @@ def _clarifications_status(sdir: Path) -> Dict[str, Any]:
             issues.append(f"{qid} answer lacks AL file evidence")
 
     for line in lines:
-        q_match = _QUESTION_RE.match(line.strip())
+        stripped_line = line.strip()
+        q_match = _QUESTION_RE.match(stripped_line)
         if q_match:
             _flush_question()
             qid = q_match.group(1)
             answer = None
             continue
+        if stripped_line.startswith("## "):
+            # Any other section (e.g. quality-gate dump) ends the current question.
+            _flush_question()
+            qid = None
+            answer = None
+            continue
         if qid:
-            a_match = _ANSWER_RE.match(line.strip())
+            a_match = _ANSWER_RE.match(stripped_line)
             if a_match:
                 answer = a_match.group(1)
+            elif answer is not None and stripped_line:
+                # MULTI-LINE ANSWERS (Gemini-Flash run, 2026-07-06): a natural answer
+                # spans lines, and truncating at the first line hid the .al evidence
+                # from this very validator — 'answer lacks AL file evidence' for an
+                # answer that carried it two lines down.
+                answer += "\n" + stripped_line
 
     _flush_question()
 
