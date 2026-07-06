@@ -42,6 +42,32 @@ FIRST_PRINCIPLES_CHECKLIST: List[Dict[str, str]] = [
 ]
 
 
+def _knowledge_worklist(
+    root: Path,
+    charter: Dict[str, Any],
+    changed_files: List[str],
+) -> List[Dict[str, Any]]:
+    """Index-aware worklist (BCQuality contract): rank the knowledge corpus against
+    the Charter + changed files and return lean discovery entries. The reviewer
+    opens each worklisted article IN FULL for its ## Best Practice / ## Anti
+    Pattern rule bodies — the index is never a substitute for them. Fail-open:
+    no corpus or any error -> []."""
+    try:
+        from bc_agentic_mcp import knowledge
+        query = " ".join(filter(None, [
+            str(charter.get("purpose") or ""),
+            " ".join(str(c) for c in charter.get("acceptance_criteria") or []),
+            " ".join(Path(f).stem for f in changed_files),
+        ]))
+        worklist = knowledge.select_articles(root, query)
+        return [{"path": a.get("path"), "layer": a.get("layer"), "domain": a.get("domain"),
+                 "title": a.get("title"), "description": a.get("description"),
+                 "file": a.get("file"), "score": a.get("score"), "parsed": a.get("parsed")}
+                for a in worklist]
+    except Exception:  # noqa: BLE001 — knowledge is advisory, never blocks review
+        return []
+
+
 def build_review_packet(
     project_root: Path,
     spec_name: str,
@@ -51,6 +77,19 @@ def build_review_packet(
     root = Path(project_root).resolve()
     charter = memory.load_charter(root, spec_name) or {}
     recent = memory.load_checkpoints(root, spec_name)[-8:]
+    knowledge_articles = _knowledge_worklist(root, charter, changed_files or [])
+    instructions = (
+        "You are a SEPARATE reviewer (not the implementer). Answer each checklist item "
+        "against the diff and the Charter. For every problem, return a finding "
+        "{id, kind: 'mistake'|'correction', severity, summary}. Findings are recorded as "
+        "checkpoints and will trigger the reflection loop."
+    )
+    if knowledge_articles:
+        instructions += (
+            " Additionally: 'knowledge' lists corpus articles matched to this change — "
+            "read each listed file IN FULL and apply its ## Best Practice / ## Anti Pattern "
+            "rules as extra checklist items (the index entry is only a discovery hint)."
+        )
     return {
         "spec_name": spec_name,
         "charter": {
@@ -61,12 +100,8 @@ def build_review_packet(
         "changed_files": changed_files or [],
         "recent_checkpoints": [{"kind": c.get("kind"), "summary": c.get("summary")} for c in recent],
         "checklist": FIRST_PRINCIPLES_CHECKLIST,
-        "instructions": (
-            "You are a SEPARATE reviewer (not the implementer). Answer each checklist item "
-            "against the diff and the Charter. For every problem, return a finding "
-            "{id, kind: 'mistake'|'correction', severity, summary}. Findings are recorded as "
-            "checkpoints and will trigger the reflection loop."
-        ),
+        "knowledge": knowledge_articles,
+        "instructions": instructions,
     }
 
 

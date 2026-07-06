@@ -1713,9 +1713,13 @@ def create_server(project_root: Optional[str] = None) -> FastMCP:
         message: Optional[str] = None,
         match: Optional[Dict[str, str]] = None,
         severity: str = "warning",
+        to_article: bool = False,
+        domain: Optional[str] = None,
         project_root: Optional[str] = None,
     ) -> Dict[str, Any]:
-        """Promote a lesson to the cross-project store so it applies to every repo."""
+        """Promote a lesson to the cross-project store so it applies to every repo.
+        to_article=True also graduates it into a repo-layer knowledge article whose
+        Best Practice / Anti Pattern rules the review worklist surfaces."""
         return await _run_tool(
             "bc_promote_lesson", handle_promote_lesson,
             project_root=project_root or str(_get_ctx().config.project_root),
@@ -1723,6 +1727,8 @@ def create_server(project_root: Optional[str] = None) -> FastMCP:
             message=message,
             match=match,
             severity=severity,
+            to_article=to_article,
+            domain=domain,
         )
 
     @mcp.tool(name="bc_extract_references")

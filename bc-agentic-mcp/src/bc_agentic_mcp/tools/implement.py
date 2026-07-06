@@ -525,6 +525,7 @@ async def handle_implement(
         "spec_name": spec_name,
         "tasks_executed": len(results),
         "results": results,
+        "knowledge": _knowledge_worklist_for_context(root, spec_name, task_ids or []),
     }
 
 
@@ -533,6 +534,30 @@ async def handle_implement(
 # and code-write on a parameter; these two names each do exactly one thing.
 # bc_implement stays as a deprecated alias for one release.
 # ---------------------------------------------------------------------------
+
+def _knowledge_worklist_for_context(
+    root: Path, spec_name: str, task_ids: List[str],
+) -> List[Dict[str, Any]]:
+    """Surface matched knowledge articles BEFORE code is written (index-aware
+    context, BCQuality contract): lean discovery hints ranked against the
+    Charter + selected tasks; the implementer reads each listed file in full
+    for its ## Best Practice / ## Anti Pattern rules. Fail-open -> []."""
+    try:
+        from bc_agentic_mcp import checkpoints as memory
+        from bc_agentic_mcp import knowledge
+        charter = memory.load_charter(root, spec_name) or {}
+        query = " ".join(filter(None, [
+            str(charter.get("purpose") or ""),
+            " ".join(str(c) for c in charter.get("acceptance_criteria") or []),
+            " ".join(task_ids),
+        ]))
+        return [{"path": a.get("path"), "layer": a.get("layer"), "title": a.get("title"),
+                 "description": a.get("description"), "file": a.get("file"),
+                 "score": a.get("score")}
+                for a in knowledge.select_articles(root, query)]
+    except Exception:  # noqa: BLE001 — advisory, never blocks context prep
+        return []
+
 
 async def handle_implement_context(
     project_root: str,

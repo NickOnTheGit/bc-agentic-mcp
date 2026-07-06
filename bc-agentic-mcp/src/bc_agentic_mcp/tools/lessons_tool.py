@@ -29,22 +29,36 @@ async def handle_promote_lesson(
     message: Optional[str] = None,
     match: Optional[Dict[str, str]] = None,
     severity: str = "warning",
+    to_article: bool = False,
+    domain: Optional[str] = None,
 ) -> Dict[str, Any]:
     """Promote a lesson to the cross-project store so it applies to every repo.
 
     Either promote an existing project lesson by ``lesson_id`` or record a new global
-    lesson directly from ``message``/``match``.
+    lesson directly from ``message``/``match``. With ``to_article=True`` the lesson
+    ALSO graduates into a repo-layer knowledge article (markdown with Best Practice /
+    Anti Pattern bodies) that the index-aware review worklist can surface.
     """
     root = Path(project_root).resolve()
+    result: Dict[str, Any]
+    lesson: Optional[Dict[str, Any]] = None
     if lesson_id:
         promoted = lessons_store.promote_lesson(root, lesson_id)
         if promoted is None:
             return {"promoted": False, "reason": f"lesson {lesson_id} not found"}
-        return {"promoted": True, "lesson": promoted}
-    if message:
+        lesson = promoted
+        result = {"promoted": True, "lesson": promoted}
+    elif message:
         lesson = lessons_store.record_global_lesson(
             message=message, match=match or {}, severity=severity
         )
-        return {"promoted": True, "lesson": lesson}
-    return {"promoted": False, "reason": "provide 'lesson_id' or 'message'"}
+        result = {"promoted": True, "lesson": lesson}
+    else:
+        return {"promoted": False, "reason": "provide 'lesson_id' or 'message'"}
+    if to_article and lesson:
+        from bc_agentic_mcp import knowledge
+        result["article"] = knowledge.graduate_lesson_to_article(
+            root, lesson, domain=domain or "lessons"
+        )
+    return result
 
