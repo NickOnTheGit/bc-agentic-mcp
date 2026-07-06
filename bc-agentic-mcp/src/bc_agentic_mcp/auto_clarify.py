@@ -33,12 +33,19 @@ _STOPWORDS = {
 
 
 def parse_open_questions(clar_text: str) -> List[Dict[str, str]]:
-    """Return [{id, question}] for every question whose _Answer:_ line is empty."""
+    """Return [{id, question}] for every question whose _Answer:_ line is empty.
+
+    Image-transcription questions (Q-95x band) are EXCLUDED: keyword matching over
+    text cannot read pixels — auto-answering them would be fabrication. They must
+    be answered by a seeing agent or a human (image wall, 2026-07-06).
+    """
     out: List[Dict[str, str]] = []
     blocks = _QUESTION_RE.split(clar_text)
     # split yields: [prefix, id1, q1, body1, id2, q2, body2, ...]
     for i in range(1, len(blocks) - 2, 3):
         qid, question, body = blocks[i], blocks[i + 1].strip(), blocks[i + 2]
+        if qid.startswith("Q-95"):
+            continue
         m = _ANSWER_RE.search(body)
         answered = bool(m and m.group(1).strip())
         if not answered:

@@ -114,6 +114,19 @@ authorization (weak-model simulation 2026-07-06: a confused agent invented "sand
 testing" as override_reason and approved its own plan). When a gate blocks you and its
 prescription does not resolve it: report the exact blocker to the human and STOP.
 
+## Pictures ARE requirements (image wall, 2026-07-06)
+ADO items embed screenshots that often carry the REAL requirements — column layouts,
+field lists, captions ("add these columns" exists only in the picture). The machine
+enforces this: capture downloads every embedded image to `context/images/`, leaves an
+inline `[IMAGE n]` marker in the text, and writes one BLOCKING `Q-95x` clarification per
+image — the spec cannot proceed until each is answered. Your obligation:
+1. OPEN each saved image file and LOOK at it (you are multimodal — use it).
+2. Transcribe exactly what it demands: column names in order, field captions, layout,
+   values — plus the target .al object it maps to.
+3. Record via `bc_answer_clarification` (`Q-951`, `Q-952`, …). Never guess from the
+   filename, never auto-answer (`bc_auto_clarify` refuses the Q-95x band by design —
+   text matching cannot read pixels), never skip because "the text seems complete".
+
 ## Entry routing (pick the path from the request)
 - **Path A — Requirements/email/PBI -> spec (planning).** The request is raw intent (an email,
   a story, "make a spec", refinement). Lifecycle: `capture -> clarify -> write_spec ->

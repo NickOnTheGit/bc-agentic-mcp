@@ -1,6 +1,6 @@
 {
   "agents/bc-implementer.agent.md": "434eda51660369b8",
-  "agents/bc-orchestrator.agent.md": "a3a7de622906424c",
+  "agents/bc-orchestrator.agent.md": "7890bdf6cda683a1",
   "agents/bc-refiner.agent.md": "2e6281869ed477dd",
   "agents/bc-reviewer.agent.md": "b93ba08d73603761",
   "src/bc_agentic_mcp/prompts/clarifier.md": "ab36dd573a0547eb",

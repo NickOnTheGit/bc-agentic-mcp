@@ -80,8 +80,28 @@ async def handle_capture_item_context(
         project_root, spec_name, item_id=work_item_id, description=description,
         org_url=org_url, project=project, pat_env=pat_env, comments=comments,
         extra_related_ids=ancestry, identity=identity,
+        images=(wi.get("images") if wi.get("fetched") else None),
     )
     result: Dict[str, Any] = {"captured": True, "complete": manifest["complete"], "manifest": manifest}
+    # PICTURES ARE REQUIREMENTS (user report 2026-07-06: columns specified only in
+    # screenshots were missed). Every captured image creates an explicit obligation:
+    # view it, transcribe what it demands, record via bc_answer_clarification — the
+    # spec gate refuses to proceed until then.
+    imgs = manifest.get("images") or []
+    if imgs:
+        result["images_captured"] = len(imgs)
+        result["image_obligation"] = {
+            "reason": (f"{len(imgs)} embedded image(s) saved under context/images/ — "
+                       "screenshots often carry the REAL requirements (columns, fields, "
+                       "layouts). Each must be VIEWED and transcribed before the spec."),
+            "images": [i["path"] for i in imgs],
+            "next_action": {
+                "tool": "bc_answer_clarification",
+                "params_hint": {"spec_name": spec_name,
+                                "answers": {"Q-IMG-1": "<what image 1 shows: exact columns/"
+                                            "fields/layout it demands, with .al evidence>"}},
+            },
+        }
     q = manifest.get("quarantine") or {}
     if q.get("risk") in ("high", "low"):
         result["quarantine_risk"] = q["risk"]
