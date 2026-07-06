@@ -27,6 +27,7 @@ ACTIONS = {
     "env_check": "Container/license preflight with the saved presets",
     "tool_health": "Refresh the tool reliability report from the audit log",
     "consistency_sweep": "Cross-artifact consistency check for every plan-stage mission",
+    "grill_sweep": "Issue a deterministic self-challenge (simpler design? knowledge conflicts?) to every active mission",
 }
 _TIME_RE = re.compile(r"^([01]?\d|2[0-3]):([0-5]\d)$")
 _DAY_SETS = {

@@ -498,6 +498,31 @@ def create_app(project_root: str, specs_root: str | None = None) -> Starlette:
                                     "status": str(result.get("status", ""))[:40]})
             return {"summary": f"consistency sweep: {len(details)} plan-stage mission(s)",
                     "details": details}
+        if action == "grill_sweep":
+            # Deterministic self-challenge: build the packet locally (read-only),
+            # record it through the bridge so audit/policy see the write.
+            from bc_agentic_mcp import grill as grill_mod
+            details = []
+            for item in items:
+                if item["phase"] in ("archived", "merged") or item.get("is_feature"):
+                    continue
+                status = grill_mod.grill_status(root, item["name"])
+                if status["grilled"] and not status["answered"]:
+                    details.append({"spec": item["name"], "state": "previous grill unanswered"})
+                    continue  # don't stack challenges — one open grill at a time
+                packet = grill_mod.build_grill_packet(root, item["name"])
+                if not packet["challenges"]:
+                    continue
+                await bridge.call("bc_checkpoint", {
+                    "spec_name": item["name"], "kind": "grill",
+                    "summary": packet["summary"],
+                    "details": {"challenge_ids": [c.get("id") for c in packet["challenges"]],
+                                "answer_via": packet["answer_via"]},
+                })
+                details.append({"spec": item["name"],
+                                "state": f"challenged ({len(packet['challenges'])} questions)"})
+            return {"summary": f"grill sweep: {len(details)} mission(s) touched",
+                    "details": details}
         return {"error": f"unknown action '{action}'"}
 
     scheduler = routines_mod.RoutineScheduler(specs_base, _routine_executor)
