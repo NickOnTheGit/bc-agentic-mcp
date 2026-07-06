@@ -215,6 +215,93 @@ def _detect_unpaired_bootstrap(project_root: Path, spec_name: str) -> List[Findi
             })
     return findings
 
+def _spec_allowed_al_files(project_root: Path, spec_name: str) -> List[Path]:
+    """The spec's in-scope .al files that exist on disk (shared by file-level detectors)."""
+    spec_path = specs_root(project_root) / spec_name / "spec.json"
+    try:
+        spec = json.loads(spec_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return []
+    allowed = ((spec.get("scope_boundaries") or {}).get("allowed_files") or [])
+    out: List[Path] = []
+    for rel in allowed:
+        p = (project_root / str(rel)).resolve()
+        if p.exists() and p.name.lower().endswith(".al"):
+            out.append(p)
+    return out
+
+
+def _detect_crlf_corruption(project_root: Path, spec_name: str) -> List[Finding]:
+    """Line-ending corruption: \\r\\r\\n in an in-scope file (PR 41670 review, 2026-07-06).
+
+    CRLF content written through a newline-translating layer becomes \\r\\r\\n on every
+    line: ADO renders phantom blank lines (review noise: 'too many spaces') and an
+    untouched file shows as fully rewritten (91+/91-), hiding the real diff. The write
+    path now normalizes — this detector catches PRE-EXISTING corruption in scope.
+    """
+    findings: List[Finding] = []
+    for p in _spec_allowed_al_files(project_root, spec_name):
+        try:
+            raw = p.read_bytes()
+        except OSError:
+            continue
+        n = raw.count(b"\r\r\n")
+        if n:
+            findings.append({
+                "detector": "crlf_corruption",
+                "code": "CRLF-DOUBLE",
+                "kind": "mistake",
+                "severity": "error",
+                "summary": (
+                    f"{p.name} has {n} corrupted line ending(s) (\\r\\r\\n): the diff shows "
+                    "phantom blank lines and the file appears fully rewritten. Rewrite the "
+                    "file with clean CRLF (bc_implement_write normalizes) — or restore it "
+                    "from master if it carries no semantic change."
+                ),
+            })
+    return findings
+
+
+_VAR_RECORD_PARAM_RE = re.compile(
+    r"procedure\s+\w+\s*\(([^)]*\bvar\s+(\w+)\s*:\s*Record\b[^)]*)\)", re.IGNORECASE)
+
+
+def _detect_escaping_partial_record(project_root: Path, spec_name: str) -> List[Finding]:
+    """A `var Record` out-parameter that gets SetLoadFields inside the same procedure:
+    a PARTIAL record escaping the scope that knows what was loaded (reviewer lesson,
+    PR 41674 thread 316421). Any future caller reading an unloaded field hits the
+    partial-record trap, and the record carries invisible filters. Expose the
+    DECISION, not the record.
+    """
+    findings: List[Finding] = []
+    for p in _spec_allowed_al_files(project_root, spec_name):
+        try:
+            text = p.read_text(encoding="utf-8", errors="replace")
+        except OSError:
+            continue
+        # Split into procedure bodies (next 'procedure' keyword bounds the body).
+        for m in _VAR_RECORD_PARAM_RE.finditer(text):
+            var_name = m.group(2)
+            body_start = m.end()
+            nxt = text.find("procedure", body_start)
+            body = text[body_start:nxt if nxt != -1 else len(text)]
+            if re.search(rf"\b{re.escape(var_name)}\s*\.\s*SetLoadFields\s*\(", body, re.IGNORECASE):
+                findings.append({
+                    "detector": "escaping_partial_record",
+                    "code": "VAR-PARTIAL-REC",
+                    "kind": "mistake",
+                    "severity": "warning",
+                    "summary": (
+                        f"{p.name}: '{var_name}' is a var Record OUT-parameter that gets "
+                        "SetLoadFields inside the procedure — a partial record (with live "
+                        "filters) escapes the scope that knows what was loaded. Keep the "
+                        "record local and return the DECISION instead "
+                        "(reviewer lesson, PR 41674)."
+                    ),
+                })
+    return findings
+
+
 def detect(
     project_root: Path,
     spec_name: str,
@@ -234,6 +321,8 @@ def detect(
     findings += _detect_stale_code_context(root, spec_name)
     findings += _detect_evidence_gap(root, spec_name)
     findings += _detect_unpaired_bootstrap(root, spec_name)
+    findings += _detect_crlf_corruption(root, spec_name)
+    findings += _detect_escaping_partial_record(root, spec_name)
     return findings
 
 

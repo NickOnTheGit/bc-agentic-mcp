@@ -116,7 +116,14 @@ def classify_votes(reviewers: List[Dict[str, Any]]) -> Dict[str, Any]:
 
 
 def classify_threads(threads: List[Dict[str, Any]]) -> Dict[str, Any]:
-    """Split PR comment threads into open vs resolved; deleted threads are ignored."""
+    """Split PR comment threads into open vs resolved; deleted threads are ignored.
+
+    ``file`` is the REPO-RELATIVE path exactly as ADO reports it (leading slash
+    stripped) and ``line`` is the right-file anchor — the old passthrough let the
+    server's path absolutizer mangle '/extensions/…' into 'C:/extensions/…' and
+    dropped the line, so the rework loop could not point at the flagged spot
+    (observed live on PR 41674 thread 316419, 2026-07-06).
+    """
     open_threads: List[Dict[str, Any]] = []
     resolved = 0
     for t in threads or []:
@@ -126,10 +133,15 @@ def classify_threads(threads: List[Dict[str, Any]]) -> Dict[str, Any]:
         if status in _OPEN_THREAD_STATUSES:
             comments = t.get("comments") or []
             first = comments[0] if comments else {}
+            ctx = t.get("threadContext") or {}
+            file_path = str(ctx.get("filePath") or "").lstrip("/")
+            line = ((ctx.get("rightFileStart") or {}).get("line")
+                    or (ctx.get("leftFileStart") or {}).get("line"))
             open_threads.append({
                 "thread_id": t.get("id"),
                 "status": status,
-                "file": ((t.get("threadContext") or {}).get("filePath")),
+                "file": file_path,
+                "line": line,
                 "author": ((first.get("author") or {}).get("displayName")),
                 "comment": str(first.get("content", ""))[:500],
                 "comment_count": len(comments),

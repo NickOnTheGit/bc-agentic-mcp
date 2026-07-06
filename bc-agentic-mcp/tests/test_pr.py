@@ -75,7 +75,7 @@ def test_classify_threads_open_vs_resolved():
     out = pr_core.classify_threads(threads)
     assert out["open_count"] == 2 and out["resolved_count"] == 1
     assert out["open"][0]["comment"] == "fix naming"
-    assert out["open"][0]["file"] == "/src/a.al"
+    assert out["open"][0]["file"] == "src/a.al"  # repo-relative (leading slash stripped, 2026-07-06)
 
 
 # ---------------------------------------------------------------------------
