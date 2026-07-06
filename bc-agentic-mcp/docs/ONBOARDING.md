@@ -127,31 +127,31 @@ an `approve` decision is recorded.
 Every wall returns a `blocked_*` status with a `reason` and a `next_action`. This is
 the list a new developer must know (all are pytest-covered):
 
-| Wall | Where | Blocks when |
-|---|---|---|
-| Scope | every `bc_implement_write/delete` | file not in the spec's `allowed_files` (strict mode) |
-| Authorization | implement tools | plan not human-approved yet |
-| **ID collision** | `bc_implement_write` (new files) | the object id is declared in ANY live git worktree (`git grep --untracked` across `git worktree list`) — unpushed sibling branches mint ids too |
-| Fixture archaeology (warn) | `bc_implement_write` (new test codeunits) | sibling `Initialize()` majority-calls missing from the new file — arrives BEFORE first container contact |
-| Presentation | `bc_request_approval` | artifact missing/unreadable/empty; success carries `present_to_human` |
-| Clarifications | commit gate | any `Q-xxx` in clarifications.md unanswered / uncertain / without AL evidence |
-| Commit gate | git pre-commit | no approved charter, branch↔spec mismatch, engines red |
-| Env preflight | all container tools | no fresh passing `bc_env_preflight` for the container |
-| `blocked_no_install` | slice test runs | no install manifest — run the full cycle first |
-| `blocked_stale_install` | slice test runs | branch HEAD moved past the installed sha |
-| `blocked_foreign_install` | slice test runs | container was installed from a DIFFERENT worktree — a slice would test someone else's binaries |
-| Container mutex | publish cycles | cross-process lock; two publishes to one tenant abort each other |
-| Verification gate | `bc_prepare_pr` | any acceptance criterion below its evidence bar (container-executed proof) |
-| Reviewer freshness | `bc_prepare_pr` | newest passing `bc_review` verdict is OLDER than the last commit — it reviewed different code |
-| Breaking-change scan | `bc_prepare_pr` | BC-BREAK-ENUMVAL / BC-BREAK-FIELD / BC-BREAK-TABLE vs merge-base, + the team's exact namespace rule (first line of modified non-test .al must contain `namespace Zig.`) |
-| Dependent build | `bc_prepare_pr` | dependent-closure compile fails (seeds + direct dependents prioritized, never skipped) |
-| Data model | `bc_prepare_pr` warns → `bc_submit_decision`/`bc_merge_status` hard-block | persisted schema changes without a second developer's `bc_approve_data_model` sign-off |
-| Description standard | `bc_prepare_pr` | generated description fails the story lint — fix the GENERATOR, never hand-edit output |
-| Reflection (learn-before-ship) | `bc_prepare_pr` | unreflected mistake/correction checkpoints exist — call `bc_reflect` first |
-| PR thread guard | `bc_guard_pr_thread_resolution` | resolving a reviewer thread without addressing it |
-| Guidelines policy | quality check | 8 regex walls from `policy/coding_guidelines.json` (TODO markers, `Find('-')`, upgrade-codeunit writes, ToolTip length…) |
-| Line-ending discipline | file writer | writes match the target file's existing convention; never `\r\r\n`, no whole-file churn |
-| Doom-loop | transport/runtime | identical failing call repeated — every attempt must differ |
+| Wall                           | Where                                                                            | Blocks when                                                                                                                                                              |
+| ------------------------------ | -------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| Scope                          | every`bc_implement_write/delete`                                               | file not in the spec's`allowed_files` (strict mode)                                                                                                                    |
+| Authorization                  | implement tools                                                                  | plan not human-approved yet                                                                                                                                              |
+| **ID collision**         | `bc_implement_write` (new files)                                               | the object id is declared in ANY live git worktree (`git grep --untracked` across `git worktree list`) — unpushed sibling branches mint ids too                     |
+| Fixture archaeology (warn)     | `bc_implement_write` (new test codeunits)                                      | sibling`Initialize()` majority-calls missing from the new file — arrives BEFORE first container contact                                                               |
+| Presentation                   | `bc_request_approval`                                                          | artifact missing/unreadable/empty; success carries`present_to_human`                                                                                                   |
+| Clarifications                 | commit gate                                                                      | any`Q-xxx` in clarifications.md unanswered / uncertain / without AL evidence                                                                                           |
+| Commit gate                    | git pre-commit                                                                   | no approved charter, branch↔spec mismatch, engines red                                                                                                                  |
+| Env preflight                  | all container tools                                                              | no fresh passing`bc_env_preflight` for the container                                                                                                                   |
+| `blocked_no_install`         | slice test runs                                                                  | no install manifest — run the full cycle first                                                                                                                          |
+| `blocked_stale_install`      | slice test runs                                                                  | branch HEAD moved past the installed sha                                                                                                                                 |
+| `blocked_foreign_install`    | slice test runs                                                                  | container was installed from a DIFFERENT worktree — a slice would test someone else's binaries                                                                          |
+| Container mutex                | publish cycles                                                                   | cross-process lock; two publishes to one tenant abort each other                                                                                                         |
+| Verification gate              | `bc_prepare_pr`                                                                | any acceptance criterion below its evidence bar (container-executed proof)                                                                                               |
+| Reviewer freshness             | `bc_prepare_pr`                                                                | newest passing`bc_review` verdict is OLDER than the last commit — it reviewed different code                                                                          |
+| Breaking-change scan           | `bc_prepare_pr`                                                                | BC-BREAK-ENUMVAL / BC-BREAK-FIELD / BC-BREAK-TABLE vs merge-base, + the team's exact namespace rule (first line of modified non-test .al must contain`namespace Zig.`) |
+| Dependent build                | `bc_prepare_pr`                                                                | dependent-closure compile fails (seeds + direct dependents prioritized, never skipped)                                                                                   |
+| Data model                     | `bc_prepare_pr` warns → `bc_submit_decision`/`bc_merge_status` hard-block | persisted schema changes without a second developer's`bc_approve_data_model` sign-off                                                                                  |
+| Description standard           | `bc_prepare_pr`                                                                | generated description fails the story lint — fix the GENERATOR, never hand-edit output                                                                                  |
+| Reflection (learn-before-ship) | `bc_prepare_pr`                                                                | unreflected mistake/correction checkpoints exist — call`bc_reflect` first                                                                                             |
+| PR thread guard                | `bc_guard_pr_thread_resolution`                                                | resolving a reviewer thread without addressing it                                                                                                                        |
+| Guidelines policy              | quality check                                                                    | 8 regex walls from`policy/coding_guidelines.json` (TODO markers, `Find('-')`, upgrade-codeunit writes, ToolTip length…)                                             |
+| Line-ending discipline         | file writer                                                                      | writes match the target file's existing convention; never`\r\r\n`, no whole-file churn                                                                                 |
+| Doom-loop                      | transport/runtime                                                                | identical failing call repeated — every attempt must differ                                                                                                             |
 
 ---
 
@@ -250,8 +250,7 @@ Runtime proof happens in a real BC docker container. The full cycle is one call:
   container operations at a time. Two active publishers = livelock (each sees the
   other's same-version .app as poison). Serialize at the human level; the structural
   fix is a container per worktree.
-- Recovery from a sibling's schema (`field X cannot be located ... Removing fields
-  is not allowed`): ForceSync publish — **ask the human first**, it wipes the
+- Recovery from a sibling's schema (`field X cannot be located ... Removing fields is not allowed`): ForceSync publish — **ask the human first**, it wipes the
   sibling's published schema.
 
 ---
@@ -304,5 +303,57 @@ Bug 267598 — "rental proposal for repurchased object fails" — end to end:
   twice, it becomes engine code the third time* (see `reinstall-dependents`,
   `blocked_foreign_install`, the line-ending writer, the timeout index — all born
   from live incidents, all with a test citing the incident date).
+
+## 12. The knowledge corpus (index-aware review)
+
+Adopted from the BCQuality knowledge-index contract
+(microsoft/BCQuality `tools/Build-KnowledgeIndex.ps1`), implemented in
+`src/bc_agentic_mcp/knowledge.py`.
+
+**What it is.** A corpus of markdown *articles* — frontmatter dimensions
+(domain, keywords, technologies…) + `## Description` + normative
+`## Best Practice` / `## Anti Pattern` bodies — compiled into ONE lean
+discovery index (`<specs>/.index/knowledge.json`). Retrieval is two-phase:
+BM25 ranks the index against the Charter + changed files (relevance floor:
+≥25% of the top score), then the consumer reads each worklisted article
+**in full** for its rules. The index never substitutes for the rule bodies.
+
+**Where it surfaces** (all advisory — can never block):
+
+| Surface | Field | Meaning |
+|---|---|---|
+| `bc_review` packet | `knowledge` | Articles the reviewer must read in full and apply as extra checklist items |
+| `bc_implement_context` | `knowledge` | Best Practice surfaced BEFORE code is written |
+| `bc_promote_lesson to_article=true domain="..."` | `article` | Graduates a lesson into a repo-layer article (self-growing corpus) |
+
+**Layers.**
+
+| Layer | Location | Content |
+|---|---|---|
+| `repo` | `<specs_root>/knowledge/<domain>/**/*.md` | Your team's articles (incl. graduated lessons) |
+| `microsoft` / `community` / `custom` | a BCQuality clone | Microsoft's ~200 AL best-practice articles (free, MIT) |
+
+**Policy (committed, reviewed like code).** `.specs/policy/knowledge.json`:
+
+```jsonc
+{
+  "enabled": true,
+  "vendor": { "root": "~/.bc-agentic-mcp/BCQuality",   // env BC_MCP_KNOWLEDGE_ROOT overrides (machine-local)
+               "pinned_commit": "<sha you curated>" },
+  "enabled_layers": [],                                  // empty = all layers on disk
+  "allow": [],                                           // fnmatch globs on '<layer>/<rel>'
+  "deny": [                                              // ENFORCED at walk time; deny wins
+    "microsoft/web-services/version-apis-by-adding-not-mutating-published-versions.md",
+    "community/appsource/**"
+  ]
+}
+```
+
+The two standard denies: Microsoft's "add a new APIVersion" rule contradicts our
+house rule (*extend the current non-obsolete version in place* — checklist item
+`api_versioning`), and `appsource/**` is marketplace-only. The index header records
+the clone's actual HEAD (`vendorCommit`) and flags `vendorDrift` when it left the
+reviewed `pinned_commit` — updating vendor content is a deliberate act: bump the
+pin, re-skim, commit.
 
 Welcome aboard. Read §5 twice — the walls are the system.

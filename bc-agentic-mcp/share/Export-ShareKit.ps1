@@ -65,6 +65,9 @@ Write-Host "[3/4] instructions/ packaged ($((Get-ChildItem $instr).Count) files)
 # --- 4. installer + docs + zip ------------------------------------------------
 Copy-Item (Join-Path $PSScriptRoot "install.ps1") $kit
 Copy-Item (Join-Path $PSScriptRoot "INSTALL.md") $kit
+$onboarding = Join-Path $projectRoot "docs\ONBOARDING.md"
+if (Test-Path $onboarding) { Copy-Item $onboarding $kit }
+else { Write-Warning "docs\ONBOARDING.md not found — kit ships without the developer map." }
 $stamp = Get-Date -Format "yyyyMMdd"
 $zip = Join-Path $OutputDir "bc-agentic-mcp-kit-$stamp.zip"
 if (Test-Path $zip) { Remove-Item $zip -Force }

@@ -5,7 +5,7 @@
 .DESCRIPTION
     Run from an unzipped bc-agentic-mcp-kit folder:
 
-        .\install.ps1 -TargetRepo "C:\src\MyALRepo" [-SpecsRoot "C:\bc-workspaces"] [-Python "py -3.12"]
+        .\install.ps1 -TargetRepo "C:\src\MyALRepo" [-SpecsRoot "C:\bc-workspaces"] [-Python "py -3.12"] [-WithVendorKnowledge]
 
     Steps performed:
       1. Verifies Python >= 3.10
@@ -13,6 +13,9 @@
       3. Copies agent files into <TargetRepo>\.github\agents\
       4. Copies instruction files into <TargetRepo>\.github\instructions\
       5. Writes mcp.json.generated with ready-to-paste VS Code MCP registration
+      6. Optional (-WithVendorKnowledge): clones microsoft/BCQuality (free, MIT) and
+         writes a curated .specs\policy\knowledge.json so reviews cite Microsoft's
+         AL best-practice articles
 #>
 param(
     [Parameter(Mandatory = $true)]
@@ -24,7 +27,9 @@ param(
 
     [string]$Project = "",
 
-    [string]$Python = "python"
+    [string]$Python = "python",
+
+    [switch]$WithVendorKnowledge
 )
 
 $ErrorActionPreference = "Stop"
@@ -87,7 +92,41 @@ if ($OrgUrl -or $Project) {
 $snippet = @{ servers = @{ "bc-agentic-mcp" = $serverDef } } | ConvertTo-Json -Depth 6
 $snippetPath = Join-Path $kitRoot "mcp.json.generated"
 Set-Content -Path $snippetPath -Value $snippet -Encoding UTF8
-Write-Host "[5/5] MCP registration written to $snippetPath" -ForegroundColor Green
+Write-Host "[5/6] MCP registration written to $snippetPath" -ForegroundColor Green
+
+# --- 6. optional vendor knowledge (Microsoft BCQuality articles) -------------
+if ($WithVendorKnowledge) {
+    $vendorRoot = Join-Path $env:USERPROFILE ".bc-agentic-mcp\BCQuality"
+    if (-not (Test-Path $vendorRoot)) {
+        git clone --depth 1 https://github.com/microsoft/BCQuality $vendorRoot
+        if ($LASTEXITCODE -ne 0) { Fail "git clone of microsoft/BCQuality failed." }
+    }
+    $pin = (git -C $vendorRoot rev-parse HEAD).Trim()
+    $policyDir = Join-Path $TargetRepo ".specs\policy"
+    $policyFile = Join-Path $policyDir "knowledge.json"
+    if (Test-Path $policyFile) {
+        Write-Host "[6/6] Knowledge policy already exists (not overwritten): $policyFile" -ForegroundColor Yellow
+    } else {
+        New-Item -ItemType Directory -Force -Path $policyDir | Out-Null
+        $policy = [ordered]@{
+            enabled        = $true
+            vendor         = [ordered]@{ root = "~/.bc-agentic-mcp/BCQuality"; pinned_commit = $pin }
+            enabled_layers = @()
+            allow          = @()
+            deny           = @(
+                # Contradicts the house rule: extend the current API version in place.
+                "microsoft/web-services/version-apis-by-adding-not-mutating-published-versions.md",
+                # AppSource-marketplace-only guidance.
+                "community/appsource/**"
+            )
+        }
+        Set-Content -Path $policyFile -Value ($policy | ConvertTo-Json -Depth 4) -Encoding UTF8
+        Write-Host "[6/6] Vendor knowledge activated (pinned $($pin.Substring(0,12)); policy: $policyFile)" -ForegroundColor Green
+        Write-Host "      Commit .specs\policy\knowledge.json so the whole team shares the same curation."
+    }
+} else {
+    Write-Host "[6/6] Vendor knowledge skipped (rerun with -WithVendorKnowledge to add Microsoft's AL best-practice articles)" -ForegroundColor DarkGray
+}
 
 Write-Host ""
 Write-Host "=== DONE ===" -ForegroundColor Cyan

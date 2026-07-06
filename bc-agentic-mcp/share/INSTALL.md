@@ -10,18 +10,29 @@ Everything needed to run the Business Central agentic MCP on another machine.
 | `agents/` | Custom agent files (`bc-orchestrator`, `bc-implementer`, `bc-reviewer`) for `.github/agents/` |
 | `instructions/` | Routing + gate instruction files for `.github/instructions/` |
 | `install.ps1` | One-command installer (Windows PowerShell) |
+| `ONBOARDING.md` | The developer map: lifecycle, enforcement walls, tool catalog, knowledge corpus |
 
 ## Quick install (Windows)
 
 ```powershell
 .\install.ps1 -TargetRepo "C:\src\YourALRepo" -SpecsRoot "C:\bc-workspaces" `
-              -OrgUrl "https://dev.azure.com/yourorg" -Project "YourProject"
+              -OrgUrl "https://dev.azure.com/yourorg" -Project "YourProject" `
+              -WithVendorKnowledge
 ```
 
 `-TargetRepo` = **your own clone** of the AL repository on **your** machine — the kit
 never references the sharer's computer. `-OrgUrl`/`-Project` become the default ADO
 connection (baked into the generated MCP config as env vars). Set your personal PAT
 once: `$env:AZURE_DEVOPS_EXT_PAT = "<pat>"` — secrets are never written to files.
+
+`-WithVendorKnowledge` (optional, recommended) clones Microsoft's free
+[BCQuality](https://github.com/microsoft/BCQuality) article library (~200 AL
+best-practice articles, MIT license, no cost/signup) to `~/.bc-agentic-mcp/BCQuality`
+and writes a curated `.specs\policy\knowledge.json` pinned to the cloned commit.
+From then on, code reviews and implement-context automatically cite the matching
+articles. Commit the policy file so the whole team shares one curation; two entries
+are denied by default (their "add a new APIVersion" rule contradicts our
+extend-in-place house rule, and `appsource/**` is marketplace-only).
 
 Then merge the generated `mcp.json.generated` into VS Code's MCP config
 (`Ctrl+Shift+P` → **MCP: Open User Configuration**) and reload.
