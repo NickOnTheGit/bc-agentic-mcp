@@ -319,6 +319,50 @@ def test_classify_test_paths_shapes():
     assert counts == {"happy": 2, "negative": 2, "edge": 1}
 
 
+def test_shape_of_prefers_declared_at_shape():
+    # Retro wi267598: the spec DECLARED the no-lines scenario an edge case, but the
+    # name classifier said negative ('refused'). Spec truth wins on a unique match;
+    # ambiguity or no match falls back to the classifier.
+    from bc_agentic_mcp.tools.run_tests import _shape_of, _stmt_tokens
+    declared = [
+        {"tokens": _stmt_tokens(
+            "[edge] GIVEN a realty object with NO contract lines at all and header "
+            "Status = Sold WHEN the creation check runs THEN creation is refused "
+            "(the header-status fallback)."), "shape": "edge"},
+        {"tokens": _stmt_tokens(
+            "[negative] GIVEN a realty object whose newest contract line has "
+            "Exploitation State Type = Sold WHEN the creation check runs THEN "
+            "creation is refused with the existing status error."), "shape": "negative"},
+    ]
+    assert _shape_of("CreationCheck_NoContractLinesAndHeaderSold_CreationRefused", declared) == "edge"
+    # No unique AT match -> classifier fallback still applies.
+    assert _shape_of("SomethingUnrelated_Fails", declared) == "negative"
+    assert _shape_of("PlainHappyFlow", declared) == "happy"
+
+
+def test_prepare_pr_infers_branches_from_git(tmp_path, monkeypatch):
+    # Retro wi267598: defaults produced feature/wi267598 -> main on a repo whose
+    # truth was nicolae-catalina/wi-267598 -> master. Git wins; caller overrides win more.
+    from bc_agentic_mcp.tools import pr as pr_mod
+
+    def fake_run(cmd, **kw):
+        class R:
+            stdout = ""
+        r = R()
+        if "--show-current" in cmd:
+            r.stdout = "nicolae-catalina/wi-267598\n"
+        elif "symbolic-ref" in cmd:
+            r.stdout = "origin/master\n"
+        return r
+    monkeypatch.setattr(pr_mod._sp, "run", fake_run)
+
+    src, tgt = pr_mod._infer_branches(tmp_path, None, "main")
+    assert src == "nicolae-catalina/wi-267598" and tgt == "master"
+    # Explicit caller values always win.
+    src, tgt = pr_mod._infer_branches(tmp_path, "my/branch", "release/21")
+    assert src == "my/branch" and tgt == "release/21"
+
+
 def test_path_coverage_class_blocks_happy_only(tmp_path):
     from bc_agentic_mcp import verification
     d = specs_root(tmp_path) / "wi-paths"

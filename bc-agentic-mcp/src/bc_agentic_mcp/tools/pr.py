@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import json
 import re
+import subprocess as _sp
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional
@@ -404,6 +405,30 @@ def _humanize_test_name(name: str) -> str:
     return _words(name).capitalize() + "."
 
 
+def _infer_branches(root: Path, source_branch: Optional[str], target_branch: Optional[str]) -> tuple:
+    """Infer source/target from GIT, not from wishful defaults.
+
+    The old defaults produced 'feature/wi267598' -> 'main' on a repo whose real
+    state was 'nicolae-catalina/wi-267598' -> 'master' — wrong on both ends,
+    every time (caught live on wi267598's first prepared PR). Explicit caller
+    values always win; git fills the gaps; the old strings remain the last resort.
+    """
+    def _git(*args: str) -> str:
+        try:
+            return _sp.run(["git", "-C", str(root), *args], capture_output=True,
+                           text=True, timeout=15, stdin=_sp.DEVNULL).stdout.strip()
+        except (OSError, _sp.SubprocessError):
+            return ""
+
+    src = source_branch or _git("branch", "--show-current") or None
+    tgt = target_branch
+    if not tgt or tgt == "main":  # "main" is the signature default, not a choice
+        head = _git("symbolic-ref", "--short", "refs/remotes/origin/HEAD")  # e.g. origin/master
+        inferred = head.rsplit("/", 1)[-1] if head else ""
+        tgt = inferred or tgt or "main"
+    return src, tgt
+
+
 async def handle_prepare_pr(
     project_root: str,
     spec_name: str,
@@ -417,6 +442,7 @@ async def handle_prepare_pr(
     from the spec + verification digest, written to ``.specs/<item>/pr/PR.md``.
     """
     root = Path(project_root).resolve()
+    source_branch, target_branch = _infer_branches(root, source_branch, target_branch)
     gate = verification.gate(root, spec_name)
     if not gate["passed"]:
         return {

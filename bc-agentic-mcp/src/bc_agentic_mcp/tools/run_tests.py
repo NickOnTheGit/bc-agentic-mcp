@@ -191,10 +191,11 @@ async def handle_run_tests(
         # EXPLICIT per-test visibility (PBI-template shape): the caller — and the
         # human — must see WHICH tests ran and WHAT shape each one proves, not a
         # bare pass count. Also persisted as TEST-REPORT.md in the spec folder.
+        declared = _declared_shapes(Path(project_root).resolve(), spec_name)
         executed_tests = [
             {"codeunit": cu.get("name") or cu.get("id"),
              "test": t.get("name", ""),
-             "shape": _shape_of(t.get("name", "")),
+             "shape": _shape_of(t.get("name", ""), declared),
              "result": t.get("result", "")}
             for cu in result.get("codeunits", [])
             for t in cu.get("tests", [])
@@ -222,7 +223,42 @@ async def handle_run_tests(
     return result
 
 
-def _shape_of(name: str) -> str:
+_SHAPE_STOPWORDS = {"a", "an", "the", "is", "are", "and", "with", "for", "then",
+                    "when", "given", "to", "of", "in", "on", "at", "by", "check"}
+
+
+def _stmt_tokens(text: str) -> "set[str]":
+    import re as _re
+    spaced = _re.sub(r"(?<=[a-z0-9])(?=[A-Z])", " ", str(text or ""))
+    return {t.lower() for t in _re.split(r"[^A-Za-z0-9]+", spaced) if t}
+
+
+def _declared_shapes(project_root: Path, spec_name: str) -> List[Dict[str, Any]]:
+    """AT statements + their DECLARED path_shape from the spec (spec truth)."""
+    if not spec_name:
+        return []
+    try:
+        from bc_agentic_mcp.spec_loader import load_spec
+        spec = load_spec(specs_root(project_root) / spec_name)
+    except Exception:
+        return []
+    return [{"tokens": _stmt_tokens(at.get("statement", "")), "shape": str(at["path_shape"])}
+            for at in (spec.get("acceptance_tests") or []) if at.get("path_shape")]
+
+
+def _shape_of(name: str, declared: Optional[List[Dict[str, Any]]] = None) -> str:
+    """Shape of one executed test: the spec's DECLARED shape wins when the test
+    name unambiguously maps to one acceptance test; the name classifier is the
+    fallback. (Retro wi267598: name heuristics called 'CreationRefused' tests
+    happy and the lowest-Volgnr edge a happy path — the spec knew better all along.)
+    Deterministic: an override happens ONLY when every matching AT agrees.
+    """
+    if declared:
+        ntoks = _stmt_tokens(name) - _SHAPE_STOPWORDS
+        if ntoks:
+            shapes = {d["shape"] for d in declared if ntoks <= d["tokens"]}
+            if len(shapes) == 1:
+                return shapes.pop()
     counts = verification.classify_test_paths([name])
     for shape in ("edge", "negative", "happy"):
         if counts.get(shape):
