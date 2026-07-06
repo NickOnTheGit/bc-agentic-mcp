@@ -752,7 +752,8 @@ def test_prepare_pr_renders_explicit_test_table(tmp_path, monkeypatch):
     # ADO-safe plain list (no pipe tables — they do not render in comment threads),
     # human sentences, explicit status words, and NO local file references.
     assert "JobQueueEntriesForRemovedWorkerAreDeletedByUpgrade — PASSED" in table
-    assert "Validates (happy path): Job queue entries for removed worker are deleted by upgrade" in table
+    # Humanized sentence (camel-split, trailing period); recorded shape honored.
+    assert "Validates (happy path): Job queue entries for removed worker are deleted by upgrade." in table
     assert "Validates (negative (must be refused)):" in table
     assert "|" not in table, "pipe tables do not render in ADO comment threads"
     assert "TEST-REPORT" not in table, "no local file references for the PR reviewer"

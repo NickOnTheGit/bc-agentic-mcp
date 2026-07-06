@@ -316,6 +316,28 @@ def _apply_envelope(result: Any, kwargs: Dict[str, Any]) -> Any:
             or "error" in result  # error-shaped results are never ok
             or status.startswith(("blocked", "error", "failed"))
         )
+    # TWO-AUDIENCE RULE for asking states (literalist persona finding 2026-07-06):
+    # a needs_* response must carry BOTH a human reason and an executable
+    # next_action, or a weak agent dies one tool call away from the fix.
+    status_now = str(result.get("status", ""))
+    if status_now.startswith("needs"):
+        questions = result.get("questions") or []
+        if not (result.get("reason") or result.get("message")):
+            result["reason"] = (
+                f"{len(questions)} clarification question(s) must be answered before this "
+                "step can proceed — see 'questions' for the exact asks."
+                if questions else
+                "This step needs more input before it can proceed — see the response fields."
+            )
+        if "next_action" not in result and questions:
+            result["next_action"] = {
+                "tool": "bc_answer_clarification",
+                "params_hint": {
+                    "spec_name": kwargs.get("spec_name"),
+                    "answers": {str(q.get("id")): "<your answer with .al evidence>"
+                                for q in questions if isinstance(q, dict) and q.get("id")},
+                },
+            }
     if "stage" not in result:
         try:
             result["stage"] = infer_stage(kwargs.get("project_root"), kwargs.get("spec_name"))
@@ -370,14 +392,29 @@ async def _run_tool(tool_name: str, handler, session_id: str = "default", **kwar
             spec_name=kwargs.get("spec_name"),
         )
         if not allowed:
+            # Repeater-persona finding (2026-07-06): a weak agent hammers the same
+            # policy-refused call forever — gate blocks are ledger-neutral by design,
+            # so nothing ever told it to STOP. Escalate the hint on a streak.
+            _fp = attempts.param_fingerprint(tool_name, kwargs)
+            _streak = attempts.note_refusal(_fp)
+            _hint = meta.get("hint") or ""
+            if _streak >= attempts.MAX_IDENTICAL_REFUSALS:
+                _hint = (
+                    f"STOP: this identical call has now been refused {_streak} times in a row — "
+                    "repeating it cannot succeed. Call bc_status with the spec_name and execute "
+                    "its FIRST next_actions entry instead. " + _hint
+                )
             return error_response(
                 ErrorCode.CLIENT_ERROR,
                 f"Policy blocked tool call '{tool_name}'",
-                hint=meta.get("hint"),
+                hint=_hint,
                 details={
                     "policy": meta,
                     "tool": tool_name,
                     "role": ctx.agent_role,
+                    "identical_refusals": _streak,
+                    "next_action": {"tool": "bc_status",
+                                    "params_hint": {"spec_name": kwargs.get("spec_name")}},
                 },
             )
 
@@ -442,7 +479,19 @@ async def _run_tool(tool_name: str, handler, session_id: str = "default", **kwar
                 kwargs.get("project_root"), kwargs.get("spec_name"), tool_name,
                 attempt["fingerprint"], failure_message,
             )
-        elif not attempts.result_gate_blocked(result):
+        elif attempts.result_gate_blocked(result):
+            # Gate blocks stay ledger-neutral, but an IDENTICAL gate-blocked call
+            # repeated past the leash gets escalating guidance (repeater persona).
+            streak = attempts.note_refusal(attempt["fingerprint"])
+            if streak >= attempts.MAX_IDENTICAL_REFUSALS and isinstance(result, dict):
+                result["identical_refusals"] = streak
+                result["reason"] = (
+                    f"STOP: this identical call has been refused {streak} times in a row — "
+                    "satisfy the prerequisite it names (see next_action) before retrying. "
+                    + str(result.get("reason", ""))
+                )
+        else:
+            attempts.clear_refusals(attempt["fingerprint"])
             recovery = attempts.record_success(
                 kwargs.get("project_root"), kwargs.get("spec_name"), tool_name, attempt["fingerprint"]
             )
@@ -809,8 +858,9 @@ def create_server(project_root: Optional[str] = None) -> FastMCP:
         project_root: Optional[str] = None,
         feedback: str = "",
         override_reason: str = "",
+        confirm_human: bool = False,
     ) -> Dict[str, Any]:
-        """Record the human's decision on a pending approval (implement/complete approvals are gated on verification)."""
+        """Record the human's decision on a pending approval. override_reason requires confirm_human=true — ONLY set it when a human literally authorized the override; an agent must never set it on its own."""
         return await _run_tool(
             "bc_submit_decision", handle_submit_decision,
             project_root=project_root or str(_get_ctx().config.project_root),
@@ -819,6 +869,7 @@ def create_server(project_root: Optional[str] = None) -> FastMCP:
             decision=decision,
             feedback=feedback,
             override_reason=override_reason,
+            confirm_human=confirm_human,
         )
 
     @mcp.tool(name="bc_approve_data_model")

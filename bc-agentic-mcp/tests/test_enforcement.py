@@ -121,8 +121,14 @@ async def test_approval_allowed_with_evidence(tmp_path):
 async def test_approval_override_is_loud_and_audited(tmp_path):
     _charter(tmp_path)  # no tests -> gate fails
     await handle_request_approval(str(tmp_path), "s", "implement", _art(tmp_path), "sum", "idem-1")
+    # An agent-only override (no confirm_human) must be refused outright.
+    refused = await handle_submit_decision(str(tmp_path), "s", "implement", "approve",
+                                           override_reason="hotfix; runtime env unavailable")
+    assert refused["status"] == "blocked_override_needs_human"
+    # The HUMAN-confirmed override goes through, loudly audited.
     res = await handle_submit_decision(str(tmp_path), "s", "implement", "approve",
-                                       override_reason="hotfix; runtime env unavailable")
+                                       override_reason="hotfix; runtime env unavailable",
+                                       confirm_human=True)
     assert res["status"] == "approve"
     assert res["evidence_override"] is True
     assert res["audit_entry"]["override_reason"].startswith("hotfix")

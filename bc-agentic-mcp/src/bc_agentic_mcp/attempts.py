@@ -228,6 +228,25 @@ def result_gate_blocked(result: Any) -> bool:
     return result.get("blocked") is True or str(result.get("status", "")).startswith("blocked")
 
 
+# Repeated POLICY/GATE refusals of the IDENTICAL call are invisible to the failure
+# ledger by design (a gate says "fix the prerequisite, retry the same call") — but a
+# weak agent hammering the same refused call forever is a live doom loop (repeater
+# persona finding 2026-07-06). Track refusal streaks in-memory per fingerprint and
+# escalate the guidance once the streak passes the leash.
+_REFUSAL_STREAKS: Dict[str, int] = {}
+MAX_IDENTICAL_REFUSALS = 3
+
+
+def note_refusal(fingerprint: str) -> int:
+    """Record one more refusal of this exact call; returns the streak length."""
+    _REFUSAL_STREAKS[fingerprint] = _REFUSAL_STREAKS.get(fingerprint, 0) + 1
+    return _REFUSAL_STREAKS[fingerprint]
+
+
+def clear_refusals(fingerprint: str) -> None:
+    _REFUSAL_STREAKS.pop(fingerprint, None)
+
+
 def result_failure_signal(result: Any) -> Optional[str]:
     """Detect a failure expressed as a structured result (no exception raised).
 

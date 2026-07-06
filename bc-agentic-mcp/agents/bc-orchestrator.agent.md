@@ -106,6 +106,14 @@ NEVER reconstruct them from memory. Recover from disk:
 3. Re-state the Charter purpose (every spec-scoped response re-injects it as `reanchor`)
    before resuming from `bc_status.next_actions`.
 
+## Override law (overrides are HUMAN acts — never yours)
+`override_reason` on any gate (`bc_submit_decision` etc.) exists for HUMANS to make a
+deliberate, audited exception. You NEVER set it — and never set `confirm_human=true` —
+unless the human literally typed the authorization in this conversation. Confusion is not
+authorization (weak-model simulation 2026-07-06: a confused agent invented "sandbox
+testing" as override_reason and approved its own plan). When a gate blocks you and its
+prescription does not resolve it: report the exact blocker to the human and STOP.
+
 ## Entry routing (pick the path from the request)
 - **Path A — Requirements/email/PBI -> spec (planning).** The request is raw intent (an email,
   a story, "make a spec", refinement). Lifecycle: `capture -> clarify -> write_spec ->

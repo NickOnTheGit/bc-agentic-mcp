@@ -32,9 +32,13 @@ DEFAULT_TTL_SECONDS = 1800  # 30 minutes: containers are stable within a session
 DEFAULT_DEV_PORT = 7049
 PUBLISH_MODE = "dev-endpoint-tenant"  # the mode proven stable on this stack
 # Container-user candidates, most likely first. The USER is environment truth:
-# acctest was created with 'devadmin' while every default said 'admin' — the
-# resulting 401s cost an install attempt (observed live, PBI 240435).
-USER_CANDIDATES = ("devadmin", "admin")
+# a container created with 'devadmin' while every default said 'admin' cost an
+# install attempt in 401s (observed live, PBI 240435). Env-configurable so no
+# team's account names are baked into the MCP (hardcode sweep 2026-07-06).
+USER_CANDIDATES = tuple(
+    u.strip() for u in os.environ.get("BC_MCP_CONTAINER_USERS", "devadmin,admin").split(",")
+    if u.strip()
+) or ("devadmin", "admin")
 
 _RUNNER = Callable[[List[str]], "subprocess.CompletedProcess"]
 _FETCHER = Callable[[str, Dict[str, str]], "tuple[int, str]"]

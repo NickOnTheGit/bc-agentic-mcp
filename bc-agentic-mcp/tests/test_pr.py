@@ -694,6 +694,65 @@ def test_implement_write_requires_code_and_path(tmp_path):
         asyncio.run(handle_implement_write(str(tmp_path), "item-1", code="codeunit 1 X {}", file_path=" "))
 
 
+def test_id_collision_wall_blocks_sibling_worktree_id(tmp_path, monkeypatch):
+    # wi267598 live: 66190 taken in-repo, 66189 taken by an UNPUSHED sibling branch.
+    # The wall must consult every live worktree before a new object id is minted.
+    from bc_agentic_mcp.tools import implement as imp
+
+    mine = tmp_path / "wt-mine"
+    theirs = tmp_path / "wt-theirs"
+    (theirs / "extensions").mkdir(parents=True)
+    (theirs / "extensions" / "Other.Codeunit.al").write_text(
+        "codeunit 66189 FacilityCountsSyncFDNT\n{\n}\n", encoding="utf-8")
+    mine.mkdir()
+
+    monkeypatch.setattr(imp, "_live_worktrees", lambda root: [mine, theirs])
+
+    def fake_run(cmd, **kw):
+        class R:
+            stdout = ""
+        r = R()
+        if "grep" in cmd and str(theirs) in cmd[2]:
+            r.stdout = "extensions/Other.Codeunit.al\n"
+        return r
+    monkeypatch.setattr(imp.subprocess, "run", fake_run)
+
+    block = imp._id_collision_wall(mine, "codeunit 66189 MyNewTestFDNT\n{\n}\n", "ext/New.al")
+    assert block and block["status"] == "blocked_id_collision"
+    assert "66189" in block["reason"] and "Other.Codeunit.al" in block["colliding_file"]
+
+    # A free id passes.
+    assert imp._id_collision_wall(mine, "codeunit 66231 MyNewTestFDNT\n{\n}\n", "ext/New.al") is None
+
+
+def test_fixture_archaeology_flags_missing_sibling_setup(tmp_path):
+    # wi267598 live: siblings' Initialize() already called the DAEB deactivation the
+    # new test file lacked — a full container cycle discovered what a folder read knew.
+    from bc_agentic_mcp.tools.implement import _fixture_archaeology
+
+    folder = tmp_path / "ext" / "Tests"
+    folder.mkdir(parents=True)
+    sibling = ("codeunit 66001 SiblingFDNT\n{\n    Subtype = Test;\n"
+               "    local procedure Initialize()\n    begin\n"
+               "        LibraryLiving.CreateProlongationCluster();\n"
+               "        DeactivateDaebNonDaebIntegration();\n"
+               "        Commit();\n    end;\n}\n")
+    (folder / "SiblingA.Codeunit.al").write_text(sibling, encoding="utf-8")
+    (folder / "SiblingB.Codeunit.al").write_text(sibling.replace("66001", "66002"), encoding="utf-8")
+
+    new_code = ("codeunit 66003 NewFDNT\n{\n    Subtype = Test;\n"
+                "    local procedure Initialize()\n    begin\n"
+                "        LibraryLiving.CreateProlongationCluster();\n    end;\n}\n")
+    out = _fixture_archaeology(tmp_path, "ext/Tests/New.Codeunit.al", new_code)
+    assert out and "DeactivateDaebNonDaebIntegration" in out["common_setup_missing"]
+    assert out["siblings_with_initialize"] == 2
+
+    # Non-test files and complete files stay silent.
+    assert _fixture_archaeology(tmp_path, "ext/Tests/New.Codeunit.al", "codeunit 1 X {}") is None
+    covered = new_code.replace("    end;\n}", "        DeactivateDaebNonDaebIntegration();\n    end;\n}")
+    assert _fixture_archaeology(tmp_path, "ext/Tests/New.Codeunit.al", covered) is None
+
+
 def test_write_al_file_line_ending_discipline(tmp_path):
     # CRLF input + newline translation produced \r\r\n and a 484-line rewrite
     # for a 20-line change (wi267598 live). The writer must normalize to the

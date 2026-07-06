@@ -277,6 +277,7 @@ async def handle_submit_decision(
     decision: str,
     feedback: str = "",
     override_reason: str = "",
+    confirm_human: bool = False,
 ) -> Dict[str, Any]:
     """Record the human's decision on a pending approval.
 
@@ -284,10 +285,30 @@ async def handle_submit_decision(
     BLOCKED unless the verification gate passes (every acceptance criterion covered by a
     passing test AND meeting its evidence bar). A blocked approval is not written. An
     explicit ``override_reason`` allows a deliberate bypass, which is stamped loudly into
-    the audit entry — never silent.
+    the audit entry — never silent — and additionally requires ``confirm_human=true``:
+    only a HUMAN may authorize skipping a wall (weak-model simulation 2026-07-06: a
+    confused agent invented 'sandbox testing' as override_reason and approved its own
+    plan — confusion plus an advertised escape hatch bypassed human control).
     """
     validate_phase(phase, VALID_PHASES)
     validate_decision(decision, VALID_DECISIONS)
+
+    # OVERRIDE IS A HUMAN ACT. An agent must never set confirm_human on its own —
+    # the agent contract forbids it unless the human literally typed the authorization.
+    if override_reason.strip() and not confirm_human:
+        return {
+            "status": "blocked_override_needs_human",
+            "blocked": True,
+            "phase": phase,
+            "reason": (
+                "override_reason bypasses a safety wall, and only a HUMAN may authorize "
+                "that. If a human explicitly approved this exact override, re-submit with "
+                "confirm_human=true (their words become part of the audit trail). If you "
+                "are an agent acting alone: do NOT override — fix the blocker the gate "
+                "named, or ask the human."
+            ),
+            "next_action": {"tool": "bc_status", "params_hint": {"spec_name": spec_name}},
+        }
 
     root = Path(project_root).resolve()
     approval_path = specs_root(root) / spec_name / "approvals" / f"{phase}.md"
@@ -330,11 +351,13 @@ async def handle_submit_decision(
                 "status": "blocked",
                 "phase": phase,
                 "message": (
-                    "Approval blocked: review packet is stale or incomplete. "
-                    "Regenerate with bc_prepare_review and re-submit approval, "
-                    "or provide override_reason for an explicit bypass."
+                    "Approval blocked: review packet is stale or incomplete — specifically: "
+                    f"{freshness_reason}. Fix THAT (usually bc_prepare_review to regenerate), "
+                    "then re-submit this approval."
                 ),
                 "blockers": [freshness_reason],
+                "next_action": {"tool": "bc_prepare_review",
+                                "params_hint": {"spec_name": spec_name}},
             }
         if not fresh_review and override_reason.strip():
             overridden = True

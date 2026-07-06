@@ -26,7 +26,19 @@ async def handle_status(
     if spec_name:
         spec = specs.get(spec_name)
         if not spec:
-            return {"error": f"Spec '{spec_name}' not found"}
+            # DISK IS TRUTH (amnesiac persona finding 2026-07-06): a captured item
+            # whose folder exists must never be reported as nonexistent — the
+            # state.json projection lags behind capture, and telling a weak agent
+            # "your work does not exist" sends it back to square one.
+            spec_dir = specs_root(root) / spec_name
+            if spec_dir.is_dir():
+                spec = {"phase": "captured", "note": "present on disk; not yet in state.json"}
+            else:
+                return {"error": f"Spec '{spec_name}' not found",
+                        "reason": (f"no spec named '{spec_name}' exists in state.json or on disk — "
+                                   "check the name or start with bc_capture_item_context"),
+                        "next_action": {"tool": "bc_capture_item_context",
+                                        "params_hint": {"spec_name": spec_name}}}
         result: Dict[str, Any] = {"active_spec": state.get("active_spec"), "specs": {spec_name: spec}}
         # Mechanical engine enforcement status (same checks the commit gate applies).
         try:

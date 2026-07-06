@@ -8,6 +8,7 @@ is derived from the Charter's acceptance_criteria + those results.
 from __future__ import annotations
 
 import json
+import os
 from pathlib import Path
 import re
 from typing import Any, Dict, List, Optional, Union
@@ -15,14 +16,16 @@ from typing import Any, Dict, List, Optional, Union
 from bc_agentic_mcp import checkpoints as memory
 
 _PASS_TOKENS = {"pass", "passed", "true", "ok", "success"}
-_LOCAL_CONTAINER_TOKENS = (
-    "local container",
-    "container",
-    "acctest",
-    "docker",
-    "bccontainerhelper",
-    "run-testsinbccontainer",
-    "http://acctest",
+# Evidence-location tokens that mean "ran in a local BC container". The container
+# NAME is environment-specific — extend via BC_MCP_CONTAINER_TOKENS (comma-separated)
+# instead of baking one team's container names in (hardcode sweep 2026-07-06).
+_LOCAL_CONTAINER_TOKENS = tuple(
+    t.strip().lower()
+    for t in (
+        "local container,container,docker,bccontainerhelper,run-testsinbccontainer,"
+        + os.environ.get("BC_MCP_CONTAINER_TOKENS", "acctest")
+    ).split(",")
+    if t.strip()
 )
 
 _URL_RE = re.compile(r"https?://", re.IGNORECASE)

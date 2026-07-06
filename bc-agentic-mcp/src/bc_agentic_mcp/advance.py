@@ -76,6 +76,19 @@ def seed_action(phase: Optional[str], available: Dict[str, Any]) -> Dict[str, An
             "stop": "waiting_judgment",
             "reason": "Plan approved — write the implementation via bc_implement_write.",
         }
+    if phase == "plan_approved":
+        # Weak-model finding 2026-07-06: 'No deterministic step' here read as a
+        # dead end ("am I blocked?"). It is not — it is the hand-off to judgment.
+        return {
+            "stop": "waiting_judgment",
+            "reason": (
+                "Plan approved — nothing is blocked. Implementation is a JUDGMENT step, "
+                "not a deterministic one: prepare task context with bc_implement_context, "
+                "then author each task's code via bc_implement_write (scope-fenced by the "
+                "Charter). The machine resumes deterministic stepping after 'implemented'."
+            ),
+            "next_action": {"tool": "bc_implement_context", "params_hint": {}},
+        }
     if phase == "review_comments_open":
         return {"stop": "waiting_rework",
                 "reason": "Open PR review comments need code changes (model judgment)."}

@@ -218,9 +218,27 @@ def _item_story_lines(
     """The reviewer's story for a single-item PR."""
     title = _clean_goal(str(spec.get("feature_name") or spec_name))
     lines = [f"# {title}" + (f" (WI {work_item})" if work_item else ""), ""]
-    lines += ["## What this delivers", "",
-              _clean_goal(spec.get("goal") or spec.get("purpose") or "") or
-              "See the acceptance criteria in the linked work item.", ""]
+    # Bugfix lane: the recorded root cause IS the story — symptom, cause, fix in
+    # sentences. The first cut said 'See the acceptance criteria in the linked
+    # work item', which violates PR self-containment (caught live on wi267598:
+    # the reviewer must never need anything outside the PR).
+    rc: Dict[str, Any] = {}
+    try:
+        rc_path = specs_root(root) / spec_name / "root_cause.json"
+        if rc_path.exists():
+            rc = json.loads(rc_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        rc = {}
+    delivers = _clean_goal(str(rc.get("fix_approach") or "")) or \
+        _clean_goal(spec.get("goal") or spec.get("purpose") or "") or \
+        "See the acceptance criteria in the linked work item."
+    lines += ["## What this delivers", "", delivers, ""]
+    if rc.get("symptom") and rc.get("root_cause"):
+        lines += ["## The bug and its root cause", "",
+                  f"**Symptom:** {_clean_goal(str(rc['symptom']))}", "",
+                  f"**Root cause:** {_clean_goal(str(rc['root_cause']))}", ""]
+        if rc.get("regression_risk"):
+            lines += [f"**Regression risk:** {_clean_goal(str(rc['regression_risk']))}", ""]
     changed = [re.sub(r"^\[\d+\]\s*", "", str(o.get("target") or o.get("name") or "?"))
                for o in (spec.get("objects_to_modify") or []) + (spec.get("objects_to_create") or [])]
     if changed:
@@ -587,18 +605,11 @@ async def handle_prepare_pr(
             for i, t in enumerate(det["executed_tests"], start=1):
                 name = str(t.get("test", "?"))
                 validates = t.get("validates") or _humanize_test_name(name)
-                # AL shapes are recomputed at RENDER time: recorded checkpoints keep
-                # whatever the classifier said back then (wi267598's run recorded
-                # 'CreationRefused' tests as happy before the refuse-vocabulary fix).
-                # API checks keep their recorded shape (name-based would be wrong).
-                shape_key = str(t.get("shape", ""))
-                if not t.get("validates"):
-                    counts = verification.classify_test_paths([name])
-                    for candidate in ("edge", "negative", "happy"):
-                        if counts.get(candidate):
-                            shape_key = candidate
-                            break
-                shape = shape_words.get(shape_key, shape_key)
+                # The RECORDED shape is data — never recompute it at render time
+                # (a first cut did, and overrode a declared 'happy' via the
+                # 'deleted' edge token). Stale shapes are fixed by RE-RECORDING
+                # the run with the current classifier, not by rewriting history.
+                shape = shape_words.get(str(t.get("shape", "")), str(t.get("shape", "")))
                 status = "PASSED" if str(t.get("result", "")).lower() in ("success", "pass") else "FAILED"
                 tests_md_lines.append(f"{i}. {name} — {status}")
                 tests_md_lines.append(f"   Validates ({shape}): {validates}")
