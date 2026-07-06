@@ -131,7 +131,11 @@ def parse_test_results(stdout: str) -> Dict[str, Any]:
     lm = re.findall(r"LICENSE_RECOVERY:\s*(.+)", stdout or "", re.IGNORECASE)
     if lm:
         license_recovery = lm[-1].strip()
-    all_passed = (failed == 0 and len(all_tests) > 0) if marker is None else marker
+    # VACUOUS-PASS GUARD (live finding 2026-07-06): the container's ALL_TESTS_PASSED
+    # marker said True while ZERO tests were parsed — running nothing must never be
+    # green. The marker can only certify a run that actually executed tests.
+    all_passed = (marker if (marker is not None and all_tests)
+                  else (failed == 0 and len(all_tests) > 0))
     failures = [
         {"codeunit": cu["name"], "test": t["name"],
          "error": " | ".join(t.get("error_lines", []))}

@@ -315,6 +315,10 @@ def _apply_envelope(result: Any, kwargs: Dict[str, Any]) -> Any:
             or result.get("blocked") is True
             or "error" in result  # error-shaped results are never ok
             or status.startswith(("blocked", "error", "failed"))
+            # Runner truth (live finding 2026-07-06): a run with a failed step or a
+            # red verdict summarized as ok=true misled the whole evidence sequence.
+            or bool(result.get("failed_step"))
+            or result.get("all_passed") is False
         )
     # TWO-AUDIENCE RULE for asking states (literalist persona finding 2026-07-06):
     # a needs_* response must carry BOTH a human reason and an executable

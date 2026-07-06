@@ -409,7 +409,7 @@ def test_run_full_cycle_happy_path(tmp_path, monkeypatch):
             return _proc(0, "COMPILE_DONE: True")
         if "Publish-BcContainerApp" in joined:
             return _proc(0, "PUBLISH_DONE: True")
-        return _proc(0, "ALL_TESTS_PASSED: True\n")
+        return _proc(0, "Codeunit 50100 MyTests Success\nTestfunction DoesIt Success\nALL_TESTS_PASSED: True\n")
 
     r = al_runner.run_full_cycle(
         container_name="acctest", app_project_folder="C:\\src\\testapp",

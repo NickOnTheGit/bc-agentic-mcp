@@ -138,3 +138,26 @@ def test_triage_dry_run_carries_judgment_and_incorrect_never_closes(tmp_path):
         judgment="incorrect", analysis=analysis, resolution="fixed"))
     assert out["status"] == "dry_run"
     assert out["would_post"]["resolution"] == "active"
+
+
+# ---------------------------------------------------------------------------
+# RUNNER TRUTH: vacuous passes and lying summaries (live findings 2026-07-06)
+# ---------------------------------------------------------------------------
+
+def test_zero_tests_is_never_a_pass():
+    """The container marker said ALL_TESTS_PASSED: True while ZERO tests ran —
+    running nothing must never be green evidence."""
+    from bc_agentic_mcp import al_runner
+    parsed = al_runner.parse_test_results("Some output\nALL_TESTS_PASSED: True\n")
+    assert parsed["total"] == 0
+    assert parsed["all_passed"] is False
+
+
+def test_envelope_marks_failed_step_and_red_runs_not_ok():
+    from bc_agentic_mcp.server import _apply_envelope
+    out = _apply_envelope({"executed": True, "failed_step": "publish"}, {})
+    assert out["ok"] is False
+    out = _apply_envelope({"executed": True, "all_passed": False}, {})
+    assert out["ok"] is False
+    out = _apply_envelope({"executed": True, "all_passed": True, "passed": 5, "total": 5}, {})
+    assert out["ok"] is True
