@@ -89,3 +89,52 @@ def test_classify_threads_surfaces_relative_path_and_line():
     t = out["open"][0]
     assert t["file"] == "extensions/BaseApp/src/Housing/RentalProposal/RentalProposalHelper.Codeunit.al"
     assert t["line"] == 42
+
+
+# ---------------------------------------------------------------------------
+# TRIAGE WALL: no resolution without a recorded critical judgment
+# ---------------------------------------------------------------------------
+
+def _pr_record(tmp_path):
+    import asyncio
+    pdir = tmp_path / ".specs" / "item-1" / "pr"
+    pdir.mkdir(parents=True, exist_ok=True)
+    (pdir / "pr.json").write_text(json.dumps({
+        "pr_id": 41674, "org_url": "https://dev.azure.com/org", "project": "p",
+        "repository": "r"}), encoding="utf-8")
+    return pdir
+
+
+def test_resolve_requires_triage_judgment_and_analysis(tmp_path):
+    import asyncio
+    from bc_agentic_mcp.tools.pr import handle_resolve_review_comment
+    _pr_record(tmp_path)
+    # No judgment at all -> wall.
+    out = asyncio.run(handle_resolve_review_comment(
+        str(tmp_path), "item-1", thread_id=316419, reply="done"))
+    assert out["status"] == "blocked_triage_required"
+    assert "claim to verify" in out["reason"]
+    # Judgment without substantive analysis -> wall.
+    out = asyncio.run(handle_resolve_review_comment(
+        str(tmp_path), "item-1", thread_id=316419, reply="done",
+        judgment="correct", analysis="ok"))
+    assert out["status"] == "blocked_triage_required"
+
+
+def test_triage_dry_run_carries_judgment_and_incorrect_never_closes(tmp_path):
+    import asyncio
+    from bc_agentic_mcp.tools.pr import handle_resolve_review_comment
+    _pr_record(tmp_path)
+    analysis = ("Reviewer asks why the enum extension is modified; verified via git diff -w "
+                "that the file carries no semantic change - it was a line-ending rewrite.")
+    out = asyncio.run(handle_resolve_review_comment(
+        str(tmp_path), "item-1", thread_id=316416, reply="Restored from master.",
+        judgment="correct", analysis=analysis))
+    assert out["status"] == "dry_run"
+    assert out["triage"]["judgment"] == "correct"
+    # A thread judged incorrect must never be auto-closed: resolution flips to active.
+    out = asyncio.run(handle_resolve_review_comment(
+        str(tmp_path), "item-1", thread_id=316421, reply="Respectful pushback with evidence.",
+        judgment="incorrect", analysis=analysis, resolution="fixed"))
+    assert out["status"] == "dry_run"
+    assert out["would_post"]["resolution"] == "active"

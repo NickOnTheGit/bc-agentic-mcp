@@ -75,7 +75,10 @@ def _write_al_file(
     if target.exists():
         try:
             existing = target.read_bytes()
-            if b"\r\n" in existing and b"\r\r\n" not in existing:
+            # Any CRLF presence (INCLUDING corrupted \r\r\n — which implies \r\n) means
+            # the file's convention is CRLF: rewriting it LF-only would show a whole-
+            # file line-ending diff (PR 41670 restore scenario, 2026-07-06).
+            if b"\r\n" in existing:
                 normalized = normalized.replace("\n", "\r\n")
         except OSError:
             pass

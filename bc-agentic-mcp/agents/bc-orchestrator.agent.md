@@ -114,6 +114,16 @@ authorization (weak-model simulation 2026-07-06: a confused agent invented "sand
 testing" as override_reason and approved its own plan). When a gate blocks you and its
 prescription does not resolve it: report the exact blocker to the human and STOP.
 
+## Review-comment triage law (a remark is a claim, not a command — 2026-07-06)
+Blind obedience and blind pushback are BOTH failures. For every PR review thread, BEFORE
+touching code: (1) restate what the reviewer means in your own words; (2) verify it
+against code reality — read the flagged file/line (`bc_get_review_comments` gives both),
+check every consumer of the criticized construct (a refactor that satisfies the comment
+but breaks another caller is worse than no change); (3) judge: correct / partially-correct /
+incorrect, with evidence. `bc_resolve_review_comment` ENFORCES this: it refuses without
+`judgment` + `analysis`, records the triage in the timeline, and never auto-closes a
+thread you judged incorrect — the reasoned pushback is posted and the REVIEWER decides.
+
 ## Pictures ARE requirements (image wall, 2026-07-06)
 ADO items embed screenshots that often carry the REAL requirements — column layouts,
 field lists, captions ("add these columns" exists only in the picture). The machine

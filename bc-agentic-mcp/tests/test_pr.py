@@ -334,7 +334,9 @@ def test_resolve_review_comment_flow(tmp_path, monkeypatch):
     monkeypatch.setattr(pr_core, "resolve_thread", lambda **kw: {
         "ok": True, "thread_id": kw["thread_id"], "new_status": kw["status"], "replied": True})
     out = asyncio.run(handle_resolve_review_comment(
-        str(tmp_path), "item-1", thread_id=5, reply="fixed", confirm=True))
+        str(tmp_path), "item-1", thread_id=5, reply="fixed", confirm=True,
+        judgment="correct",
+        analysis="Reviewer flagged a real formatting slip; verified against the file and fixed in commit."))
     assert out["status"] == "comment_resolved" and out["thread_id"] == 5
     assert out["next_action"]["tool"] == "bc_get_review_comments"
 
@@ -371,10 +373,13 @@ def test_external_writes_dry_run_by_default(tmp_path, monkeypatch):
     assert called == []                                   # STILL nothing sent
     assert out_blocked["next_action"]["tool"] == "bc_prepare_pr"
 
-    # resolve + state sync follow the same law
+    # resolve + state sync follow the same law (triage satisfied — the wall itself
+    # is covered in test_review_loop_walls.py)
     _seed_pr_record(tmp_path)
     out2 = asyncio.run(handle_resolve_review_comment(
-        str(tmp_path), "item-1", thread_id=5, reply="done"))
+        str(tmp_path), "item-1", thread_id=5, reply="done",
+        judgment="correct",
+        analysis="Reviewer remark verified against the code: the flagged line did carry the issue."))
     assert out2["status"] == "dry_run" and out2["would_post"]["thread_id"] == 5
     out3 = asyncio.run(handle_sync_item_state(
         org_url="https://dev.azure.com/org", project="p",

@@ -1333,12 +1333,16 @@ def create_server(project_root: Optional[str] = None) -> FastMCP:
         thread_id: int,
         reply: Optional[str] = None,
         resolution: str = "fixed",
+        judgment: Optional[str] = None,
+        analysis: Optional[str] = None,
         pat_env: str = "AZURE_DEVOPS_EXT_PAT",
         project_root: Optional[str] = None,
         confirm: bool = False,
     ) -> Dict[str, Any]:
         """Reply to and resolve one PR comment thread (after the fix is pushed).
-        DRY-RUN by default: without confirm=true the reply is only previewed."""
+        TRIAGE WALL: requires judgment ('correct'|'partially-correct'|'incorrect') +
+        analysis grounded in code reality — a remark is a claim to verify, not a
+        command to obey. 'incorrect' never auto-closes the thread. DRY-RUN by default."""
         return await _run_tool(
             "bc_resolve_review_comment", handle_resolve_review_comment,
             project_root=project_root or str(_get_ctx().config.project_root),
@@ -1346,6 +1350,8 @@ def create_server(project_root: Optional[str] = None) -> FastMCP:
             thread_id=thread_id,
             reply=reply,
             resolution=resolution,
+            judgment=judgment,
+            analysis=analysis,
             pat_env=pat_env,
             confirm=confirm,
         )

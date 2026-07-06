@@ -932,16 +932,30 @@ async def handle_get_review_comments(
     }
 
 
+_TRIAGE_JUDGMENTS = ("correct", "partially-correct", "incorrect")
+
+
 async def handle_resolve_review_comment(
     project_root: str,
     spec_name: str,
     thread_id: int,
     reply: Optional[str] = None,
     resolution: str = "fixed",
+    judgment: Optional[str] = None,
+    analysis: Optional[str] = None,
     pat_env: str = pr_core.DEFAULT_PAT_ENV,
     confirm: bool = False,
 ) -> Dict[str, Any]:
     """Reply to and resolve one PR comment thread (after the fix is pushed).
+
+    TRIAGE WALL (user law 2026-07-06): a review remark is a CLAIM, not a command —
+    blind obedience and blind pushback are both failures. Resolution requires a
+    recorded ``judgment`` ('correct' | 'partially-correct' | 'incorrect') and an
+    ``analysis`` grounding that judgment in code reality (what the reviewer means,
+    what the code actually does, why the verdict). The triage lands in the item
+    timeline BEFORE anything is posted. A thread judged 'incorrect' is never
+    auto-closed: the reply carries the reasoned pushback and the thread stays
+    active for the REVIEWER to decide.
 
     DRY-RUN BY DEFAULT: a reply is a message to a COLLEAGUE — without confirm=true
     the response shows exactly what would be posted, plus lint warnings."""
@@ -949,17 +963,46 @@ async def handle_resolve_review_comment(
     record, blocked = _require_pr_record(root, spec_name)
     if blocked:
         return blocked
+    if judgment not in _TRIAGE_JUDGMENTS or not (analysis or "").strip() or len(str(analysis).strip()) < 40:
+        return {
+            "status": "blocked_triage_required",
+            "blocked": True,
+            "reason": (
+                "Resolving a review thread requires a recorded critical triage first: "
+                "judgment ('correct' | 'partially-correct' | 'incorrect') plus an analysis "
+                "(>=40 chars) that states what the reviewer means, what the code actually "
+                "does (with the file/line evidence), and why the verdict follows. "
+                "A remark is a claim to verify, not a command to obey."
+            ),
+            "next_action": {"tool": "bc_resolve_review_comment",
+                            "params_hint": {"spec_name": spec_name, "thread_id": int(thread_id),
+                                            "judgment": "correct|partially-correct|incorrect",
+                                            "analysis": "<reviewer's point / code reality / verdict basis>"}},
+        }
+    # Disagreement must never quietly close a colleague's thread.
+    if judgment == "incorrect" and resolution in ("fixed", "closed"):
+        resolution = "active"
     if not confirm:
         return {
             "status": "dry_run",
             "executed": False,
             "would_post": {"thread_id": int(thread_id), "reply": reply,
                            "resolution": resolution, "pr_id": record.get("pr_id")},
+            "triage": {"judgment": judgment, "analysis": str(analysis).strip()},
             "lint_warnings": _lint_outbound_text(reply or ""),
             "reason": "Nothing was sent. Read would_post.reply as the colleague will, then re-call with confirm=true.",
             "next_action": {"tool": "bc_resolve_review_comment",
-                            "params_hint": {"spec_name": spec_name, "thread_id": int(thread_id), "confirm": True}},
+                            "params_hint": {"spec_name": spec_name, "thread_id": int(thread_id),
+                                            "judgment": judgment, "confirm": True}},
         }
+    # Record the triage as a durable decision BEFORE posting (timeline = single story).
+    from bc_agentic_mcp import checkpoints as _memory
+    _memory.append_checkpoint(
+        root, spec_name, kind="decision",
+        summary=f"Review thread {int(thread_id)} triaged {judgment}",
+        details={"thread_id": int(thread_id), "judgment": judgment,
+                 "analysis": str(analysis).strip()[:800], "resolution": resolution},
+    )
     result = pr_core.resolve_thread(
         **_coords(record), thread_id=int(thread_id), reply=reply,
         status=resolution, pat_env=pat_env,
@@ -967,9 +1010,10 @@ async def handle_resolve_review_comment(
     if not result.get("ok"):
         return {"status": "resolve_failed", "isError": True, **result}
     return {
-        "status": "comment_resolved",
+        "status": "comment_resolved" if resolution != "active" else "pushback_posted",
         "thread_id": result["thread_id"],
         "resolution": result["new_status"],
+        "judgment": judgment,
         "next_action": {
             "tool": "bc_get_review_comments",
             "reason": "Re-check for remaining open threads.",
