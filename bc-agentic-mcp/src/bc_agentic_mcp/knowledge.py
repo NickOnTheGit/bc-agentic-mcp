@@ -25,25 +25,36 @@ article is indexed with its layer recorded):
 
 * ``repo``   — ``<specs_root>/knowledge/<domain>/**/*.md`` (repo-local articles,
                e.g. confirmed lessons graduated to prose).
-* vendor     — a BCQuality-style clone pointed at by ``BC_MCP_KNOWLEDGE_ROOT``:
-               ``<root>/{microsoft,community,custom}/knowledge/<domain>/**/*.md``.
+* vendor     — a BCQuality-style clone: ``<root>/{microsoft,community,custom}/
+               knowledge/<domain>/**/*.md``. The root path comes from the
+               committed policy (``vendor.root``) or the ``BC_MCP_KNOWLEDGE_ROOT``
+               env var (machine-local override).
+
+Policy (``.specs/policy/knowledge.json``, committed and reviewed like code —
+same precedent as guidelines_policy): enabled kill-switch, enabled_layers,
+allow/deny globs ENFORCED at walk time (we are the consumer BCQuality expects
+to prune), and the vendor ``pinned_commit`` the curation applies to — the index
+header records the clone's actual HEAD and flags drift.
 
 Selection uses our existing Okapi BM25 (:func:`bc_agentic_mcp.lessons.bm25_scores`)
 over title + domain + keywords + dimensions + description — a strict upgrade
-over plain keyword overlap, still deterministic and dependency-free.
+over plain keyword overlap, still deterministic and dependency-free — with a
+relevance floor so a single shared token never drags an article onto the worklist.
 """
 from __future__ import annotations
 
+import fnmatch
 import hashlib
 import json
 import os
 import re
+import subprocess
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
 from bc_agentic_mcp.lessons import bm25_scores
-from bc_agentic_mcp.workspace import specs_root
+from bc_agentic_mcp.workspace import external_base, specs_root
 
 SCHEMA_VERSION = 1  # BCQuality knowledge-index schema version (compatibility contract)
 
@@ -53,6 +64,21 @@ REPO_LAYER = "repo"
 
 LEAN_DESCRIPTION_MAX = 120
 DEFAULT_TOP_K = 6
+# Worklist noise floor: an article must score at least this fraction of the top
+# hit to stay on the worklist (a single shared common token is not relevance).
+RELEVANCE_FLOOR_RATIO = 0.25
+
+# Committed, team-shared policy (mirrors guidelines_policy's .specs/policy
+# precedent). The vendor root PATH may be machine-local (env override); the
+# POLICY — which layers, what is allowed/denied, which commit is pinned — is
+# repo-scoped and reviewed like code.
+DEFAULT_POLICY: Dict[str, Any] = {
+    "enabled": True,
+    "vendor": {"root": "", "pinned_commit": ""},
+    "enabled_layers": [],  # empty = every layer present on disk
+    "allow": [],           # fnmatch globs against '<layer>/<rel>'; empty = allow all
+    "deny": [],            # fnmatch globs against '<layer>/<rel>'; deny wins
+}
 
 _FRONTMATTER_KEY_RE = re.compile(r"^\s*([a-zA-Z][\w-]*)\s*:\s*(.*)$")
 _LIST_VALUE_RE = re.compile(r"^\[(.*)\]$")
@@ -73,9 +99,52 @@ def repo_knowledge_root(project_root: Path) -> Path:
     return specs_root(Path(project_root).resolve()) / "knowledge"
 
 
-def vendor_root() -> Optional[Path]:
+def _policy_dir(project_root: Path) -> Path:
+    candidates: List[Path] = [
+        Path(project_root) / ".specs" / "policy",
+        specs_root(project_root) / "policy",
+    ]
+    base = external_base()
+    if base is not None:
+        candidates.append(base.parent / ".specs" / "policy")
+    for candidate in candidates:
+        if candidate.exists():
+            return candidate
+    return Path(project_root) / ".specs" / "policy"
+
+
+def policy_path(project_root: Path) -> Path:
+    return _policy_dir(Path(project_root).resolve()) / "knowledge.json"
+
+
+def load_policy(project_root: Path) -> Dict[str, Any]:
+    """Committed knowledge policy; fail-open to safe defaults on any problem."""
+    default = json.loads(json.dumps(DEFAULT_POLICY))
+    path = policy_path(project_root)
+    if not path.exists():
+        return default
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return default
+    if not isinstance(data, dict):
+        return default
+    default.update({k: v for k, v in data.items() if k in DEFAULT_POLICY})
+    if not isinstance(default.get("vendor"), dict):
+        default["vendor"] = dict(DEFAULT_POLICY["vendor"])
+    return default
+
+
+def vendor_root(project_root: Optional[Path] = None) -> Optional[Path]:
+    """Vendor clone root: env override (machine-local path) > committed policy."""
     env = os.environ.get(ENV_VENDOR_ROOT)
-    return Path(env).expanduser() if env else None
+    if env:
+        return Path(env).expanduser()
+    if project_root is not None:
+        raw = str((load_policy(project_root).get("vendor") or {}).get("root") or "").strip()
+        if raw:
+            return Path(raw).expanduser()
+    return None
 
 
 def knowledge_roots(project_root: Path) -> List[Tuple[str, Path]]:
@@ -84,7 +153,7 @@ def knowledge_roots(project_root: Path) -> List[Tuple[str, Path]]:
     repo_root = repo_knowledge_root(project_root)
     if repo_root.is_dir():
         roots.append((REPO_LAYER, repo_root))
-    vendor = vendor_root()
+    vendor = vendor_root(project_root)
     if vendor is not None:
         for layer in VENDOR_LAYERS:
             kb = vendor / layer / "knowledge"
@@ -189,26 +258,74 @@ def _domain_from_path(rel: str) -> str:
     return rel.split("/", 1)[0] if "/" in rel else ""
 
 
-def _walk_articles(project_root: Path) -> List[Tuple[str, Path, Path]]:
-    """Deterministic (layer, kb_root, file) triples across all configured layers."""
-    out: List[Tuple[str, Path, Path]] = []
+def _matches_any(scoped_rel: str, globs: List[str]) -> bool:
+    """Case-insensitive fnmatch of '<layer>/<rel>' against policy globs."""
+    target = scoped_rel.lower()
+    return any(fnmatch.fnmatchcase(target, str(g).replace("\\", "/").lower()) for g in globs)
+
+
+def _walk_articles(
+    project_root: Path,
+    policy: Optional[Dict[str, Any]] = None,
+) -> List[Tuple[str, Path, Path, str]]:
+    """Deterministic (layer, kb_root, file, rel) tuples across all configured layers.
+
+    The committed policy is ENFORCED here (unlike the BCQuality generator, which
+    delegates pruning to the consumer — we are the consumer): allow globs, then
+    deny globs, matched against '<layer>/<rel>'. ``enabled: false`` empties the
+    corpus without deleting any files (the curation kill-switch).
+    """
+    pol = policy if policy is not None else load_policy(project_root)
+    if not pol.get("enabled", True):
+        return []
+    allow = [str(g) for g in pol.get("allow") or []]
+    deny = [str(g) for g in pol.get("deny") or []]
+    out: List[Tuple[str, Path, Path, str]] = []
     for layer, kb_root in knowledge_roots(project_root):
         for f in sorted(kb_root.rglob("*.md")):
-            if f.is_file():
-                out.append((layer, kb_root, f))
+            if not f.is_file():
+                continue
+            rel = str(f.relative_to(kb_root)).replace("\\", "/")
+            scoped = f"{layer}/{rel}"
+            if allow and not _matches_any(scoped, allow):
+                continue
+            if deny and _matches_any(scoped, deny):
+                continue
+            out.append((layer, kb_root, f, rel))
     return out
 
 
-def _fingerprint(files: List[Tuple[str, Path, Path]]) -> str:
-    """Stat-only staleness key over the source corpus (no file reads)."""
+def _fingerprint(project_root: Path, files: List[Tuple[str, Path, Path, str]]) -> str:
+    """Stat-only staleness key over the source corpus AND the policy file
+    (a policy edit must invalidate the cache even when no article changed)."""
     h = hashlib.sha1()
-    for layer, _kb_root, f in files:
+    ppath = policy_path(project_root)
+    try:
+        pst = ppath.stat()
+        h.update(f"policy|{ppath}|{pst.st_mtime_ns}|{pst.st_size}\n".encode("utf-8"))
+    except OSError:
+        h.update(b"policy|absent\n")
+    for layer, _kb_root, f, rel in files:
         try:
             st = f.stat()
-            h.update(f"{layer}|{f}|{st.st_mtime_ns}|{st.st_size}\n".encode("utf-8"))
+            h.update(f"{layer}|{rel}|{f}|{st.st_mtime_ns}|{st.st_size}\n".encode("utf-8"))
         except OSError:
-            h.update(f"{layer}|{f}|gone\n".encode("utf-8"))
+            h.update(f"{layer}|{rel}|{f}|gone\n".encode("utf-8"))
     return h.hexdigest()
+
+
+def _vendor_commit(root: Optional[Path]) -> str:
+    """HEAD SHA of the vendor clone for provenance; '' when unknown (fail-open)."""
+    if root is None or not root.exists():
+        return ""
+    try:
+        out = subprocess.run(
+            ["git", "-C", str(root), "rev-parse", "HEAD"],
+            capture_output=True, text=True, timeout=10, stdin=subprocess.DEVNULL,
+        )
+        return out.stdout.strip() if out.returncode == 0 else ""
+    except (OSError, subprocess.SubprocessError):
+        return ""
 
 
 def build_knowledge_index(
@@ -219,19 +336,25 @@ def build_knowledge_index(
 ) -> Dict[str, Any]:
     """Walk the corpus and write the discovery artifact. Returns the index dict.
 
-    ``enabled_layers`` restricts the walk (recorded in the header for
-    provenance, per the BCQuality contract). ``full=True`` keeps verbatim
-    descriptions and pretty-prints; the default is the lean variant.
+    The committed policy governs the walk (allow/deny globs enforced, layers
+    from ``enabled_layers`` policy key unless the parameter overrides it) and
+    is recorded in the header. ``full=True`` keeps verbatim descriptions and
+    pretty-prints; the default is the lean variant.
     """
     root = Path(project_root).resolve()
-    files = _walk_articles(root)
-    if enabled_layers:
-        allowed = {l.lower() for l in enabled_layers}
+    policy = load_policy(root)
+    files = _walk_articles(root, policy)
+    effective_layers = (
+        [str(l) for l in enabled_layers]
+        if enabled_layers
+        else [str(l) for l in policy.get("enabled_layers") or []]
+    )
+    if effective_layers:
+        allowed = {l.lower() for l in effective_layers}
         files = [t for t in files if t[0].lower() in allowed]
 
     articles: List[Dict[str, Any]] = []
-    for layer, kb_root, f in files:
-        rel = str(f.relative_to(kb_root)).replace("\\", "/")
+    for layer, _kb_root, f, rel in files:
         try:
             parsed = parse_article(f)
         except Exception:  # noqa: BLE001 — fail-open by contract
@@ -264,13 +387,22 @@ def build_knowledge_index(
     index: Dict[str, Any] = {
         "version": SCHEMA_VERSION,
         "generatedAt": datetime.now(timezone.utc).isoformat(),
-        "enabledLayers": list(enabled_layers or []),
-        "knowledgeAllow": [],
-        "knowledgeDeny": [],
+        "enabledLayers": effective_layers,
+        "knowledgeAllow": [str(g) for g in policy.get("allow") or []],
+        "knowledgeDeny": [str(g) for g in policy.get("deny") or []],
         "articleCount": len(articles),
         "articles": articles,
-        "fingerprint": _fingerprint(files),  # local extension: stat-only staleness key
+        "fingerprint": _fingerprint(root, files),  # local extension: stat-only staleness key
     }
+    # Vendor provenance: which content the index was built from, and whether it
+    # drifted from the commit the team reviewed (curation is per-commit).
+    vendor_commit = _vendor_commit(vendor_root(root))
+    pinned = str((policy.get("vendor") or {}).get("pinned_commit") or "").strip()
+    if vendor_commit:
+        index["vendorCommit"] = vendor_commit
+    if pinned:
+        index["pinnedCommit"] = pinned
+        index["vendorDrift"] = bool(vendor_commit) and vendor_commit != pinned
     path = index_path(root)
     path.parent.mkdir(parents=True, exist_ok=True)
     if full:
@@ -281,10 +413,10 @@ def build_knowledge_index(
 
 
 def load_knowledge_index(project_root: Path) -> Dict[str, Any]:
-    """Load the cached index; rebuild only when the source corpus changed."""
+    """Load the cached index; rebuild only when the corpus OR policy changed."""
     root = Path(project_root).resolve()
     path = index_path(root)
-    current = _fingerprint(_walk_articles(root))
+    current = _fingerprint(root, _walk_articles(root))
     if path.exists():
         try:
             cached = json.loads(path.read_text(encoding="utf-8"))
@@ -333,7 +465,12 @@ def select_articles(
         (dict(a, score=s) for a, s in zip(articles, scores) if s > 0),
         key=lambda a: (-a["score"], a.get("path", "")),
     )
-    return ranked[:max(0, top_k)]
+    if not ranked:
+        return []
+    # Relevance floor: one shared common token is not relevance. Keep only
+    # articles scoring a meaningful fraction of the best hit.
+    floor = ranked[0]["score"] * RELEVANCE_FLOOR_RATIO
+    return [a for a in ranked if a["score"] >= floor][:max(0, top_k)]
 
 
 def _slugify(text: str, max_len: int = 60) -> str:

@@ -219,6 +219,117 @@ def test_review_packet_knowledge_empty_without_corpus(tmp_path):
     assert "IN FULL" not in packet["instructions"]
 
 
+# --- policy (committed .specs/policy/knowledge.json) --------------------------
+
+def _write_policy(root, **overrides):
+    pol = {"enabled": True, "vendor": {"root": "", "pinned_commit": ""},
+           "enabled_layers": [], "allow": [], "deny": []}
+    pol.update(overrides)
+    path = root / ".specs" / "policy" / "knowledge.json"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(pol), encoding="utf-8")
+    return path
+
+
+def _vendor_clone(base, layer="microsoft", rel="al/commit.md", text=ARTICLE):
+    art = base / layer / "knowledge" / rel
+    art.parent.mkdir(parents=True, exist_ok=True)
+    art.write_text(text, encoding="utf-8")
+    return base
+
+
+def test_policy_deny_glob_enforced_at_walk(tmp_path):
+    _write_article(tmp_path)  # upgrade/datapercompany.md
+    _write_article(tmp_path, rel="appsource/marketplace.md")
+    _write_policy(tmp_path, deny=["repo/appsource/**"])
+    index = knowledge.build_knowledge_index(tmp_path)
+    assert index["articleCount"] == 1
+    assert index["articles"][0]["path"] == "upgrade/datapercompany.md"
+    assert index["knowledgeDeny"] == ["repo/appsource/**"]  # recorded AND applied
+
+
+def test_policy_allow_globs_restrict_walk(tmp_path):
+    _write_article(tmp_path)
+    _write_article(tmp_path, rel="permissions/grants.md")
+    _write_policy(tmp_path, allow=["repo/upgrade/*"])
+    index = knowledge.build_knowledge_index(tmp_path)
+    assert [a["path"] for a in index["articles"]] == ["upgrade/datapercompany.md"]
+
+
+def test_policy_enabled_false_empties_corpus(tmp_path):
+    _write_article(tmp_path)
+    _write_policy(tmp_path, enabled=False)
+    index = knowledge.build_knowledge_index(tmp_path)
+    assert index["articleCount"] == 0
+
+
+def test_policy_enabled_layers_apply_without_param(tmp_path, monkeypatch):
+    _write_article(tmp_path)
+    clone = _vendor_clone(tmp_path / "clone")
+    monkeypatch.setenv(knowledge.ENV_VENDOR_ROOT, str(clone))
+    _write_policy(tmp_path, enabled_layers=["repo"])
+    index = knowledge.build_knowledge_index(tmp_path)
+    assert {a["layer"] for a in index["articles"]} == {"repo"}
+    assert index["enabledLayers"] == ["repo"]
+
+
+def test_vendor_root_from_policy_env_overrides(tmp_path, monkeypatch):
+    policy_clone = _vendor_clone(tmp_path / "policy-clone")
+    _write_policy(tmp_path, vendor={"root": str(policy_clone), "pinned_commit": ""})
+    project = tmp_path  # policy lives in tmp_path/.specs
+    index = knowledge.build_knowledge_index(project)
+    assert index["articleCount"] == 1
+    assert index["articles"][0]["layer"] == "microsoft"
+    # env var (machine-local path) wins over the committed root
+    env_clone = _vendor_clone(tmp_path / "env-clone", rel="al/other.md")
+    monkeypatch.setenv(knowledge.ENV_VENDOR_ROOT, str(env_clone))
+    index2 = knowledge.build_knowledge_index(project)
+    assert [a["path"] for a in index2["articles"]] == ["al/other.md"]
+
+
+def test_pinned_commit_drift_recorded(tmp_path, monkeypatch):
+    clone = _vendor_clone(tmp_path / "clone")
+    _write_policy(tmp_path, vendor={"root": str(clone), "pinned_commit": "def456"})
+    monkeypatch.setattr(knowledge, "_vendor_commit", lambda root: "abc123")
+    index = knowledge.build_knowledge_index(tmp_path)
+    assert index["vendorCommit"] == "abc123"
+    assert index["pinnedCommit"] == "def456"
+    assert index["vendorDrift"] is True
+    monkeypatch.setattr(knowledge, "_vendor_commit", lambda root: "def456")
+    index2 = knowledge.build_knowledge_index(tmp_path)
+    assert index2["vendorDrift"] is False
+
+
+def test_policy_change_invalidates_cache(tmp_path):
+    _write_article(tmp_path)
+    _write_article(tmp_path, rel="appsource/marketplace.md")
+    first = knowledge.load_knowledge_index(tmp_path)
+    assert first["articleCount"] == 2
+    _write_policy(tmp_path, deny=["repo/appsource/**"])  # no article file touched
+    rebuilt = knowledge.load_knowledge_index(tmp_path)
+    assert rebuilt["articleCount"] == 1
+
+
+def test_relevance_floor_drops_weak_matches(tmp_path):
+    strong = ARTICLE.replace(
+        "domain: upgrade", "domain: containers").replace(
+        "DataPerCompany, upgrade codeunit, company guard",
+        "poisoned, symbolcache, republish, container").replace(
+        "# Upgrade scope must match DataPerCompany",
+        "# Remove poisoned symbol cache copies before republish")
+    weak = ARTICLE.replace(
+        "domain: upgrade", "domain: api").replace(
+        "DataPerCompany, upgrade codeunit, company guard", "container").replace(
+        "# Upgrade scope must match DataPerCompany",
+        "# Extend the current version in place").replace(
+        "A data-upgrade codeunit for a shared table (DataPerCompany=false) must run\nper-database without a company guard. Per-company scope silently skips rows.",
+        "Versioning rules for pages exposed externally.")
+    _write_article(tmp_path, rel="containers/poison.md", text=strong)
+    _write_article(tmp_path, rel="api/versioning.md", text=weak)
+    hits = knowledge.select_articles(tmp_path, "poisoned symbolcache republish container")
+    assert [h["path"] for h in hits] == ["containers/poison.md"]  # weak match floored out
+
+
 # --- promote-to-article tool path ----------------------------------------------
 
 @pytest.mark.asyncio
