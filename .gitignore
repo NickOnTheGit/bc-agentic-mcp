@@ -12,3 +12,8 @@ dist/
 .vscode/mcp.json
 share/out/
 
+
+# sanctioned local scratch (never ships)
+evil/
+quick_test.py
+test_real_erp.py
