@@ -13,6 +13,9 @@ async def test_request_approval_creates_file():
         root = Path(d)
         artifact = root / "spec.json"
         artifact.write_text('{"spec": "content for the human to review"}', encoding="utf-8")
+        review = root / ".specs" / "test-spec" / "REVIEW.md"
+        review.parent.mkdir(parents=True, exist_ok=True)
+        review.write_text("# REVIEW\ncanonical packet\n", encoding="utf-8")
         result = await handle_request_approval(
             project_root=str(root),
             spec_name="test-spec",
@@ -26,7 +29,7 @@ async def test_request_approval_creates_file():
         assert result["status"] == "pending"
         # PRESENTATION WALL: the response must carry the artifact content so the
         # orchestrator can show it verbatim (approval on a paraphrase is void).
-        assert result["present_to_human"]["content"].startswith('{"spec"')
+        assert result["present_to_human"]["content"].startswith("# REVIEW")
         assert result["present_to_human"]["truncated"] is False
 
 
@@ -49,12 +52,70 @@ async def test_request_approval_refuses_missing_artifact():
 
 
 @pytest.mark.asyncio
+async def test_plan_approval_serves_canonical_review_packet_when_other_artifact_is_passed():
+    with tempfile.TemporaryDirectory() as d:
+        root = Path(d)
+        specs_dir = root / ".specs" / "test-spec"
+        specs_dir.mkdir(parents=True)
+        review_path = specs_dir / "REVIEW.md"
+        review_path.write_text("# REVIEW\ncanonical review packet\n", encoding="utf-8")
+        artifact = specs_dir / "spec.json"
+        artifact.write_text('{"spec": true}', encoding="utf-8")
+
+        result = await handle_request_approval(
+            project_root=str(root),
+            spec_name="test-spec",
+            phase="plan",
+            artifact_path=str(artifact),
+            summary="Review the plan.",
+            idempotency_key="key-plan-canonical",
+        )
+
+        assert result["status"] == "pending"
+        assert Path(result["present_to_human"]["artifact_path"]).resolve() == review_path.resolve()
+        assert result["present_to_human"]["content"].startswith("# REVIEW")
+        approval_text = Path(result["approval_path"]).read_text(encoding="utf-8")
+        artifact_line = next(
+            (line for line in approval_text.splitlines() if line.startswith("**Artifact:** ")),
+            "",
+        )
+        assert artifact_line
+        artifact_path = artifact_line.replace("**Artifact:** ", "", 1).strip()
+        assert Path(artifact_path).resolve() == review_path.resolve()
+
+
+@pytest.mark.asyncio
+async def test_plan_approval_blocks_when_canonical_review_packet_is_missing():
+    with tempfile.TemporaryDirectory() as d:
+        root = Path(d)
+        specs_dir = root / ".specs" / "test-spec"
+        specs_dir.mkdir(parents=True)
+        artifact = specs_dir / "spec.json"
+        artifact.write_text('{"spec": true}', encoding="utf-8")
+
+        result = await handle_request_approval(
+            project_root=str(root),
+            spec_name="test-spec",
+            phase="plan",
+            artifact_path=str(artifact),
+            summary="Review the plan.",
+            idempotency_key="key-plan-missing-review",
+        )
+
+        assert result["status"] == "blocked_artifact_missing"
+        assert result["blocked"] is True
+
+
+@pytest.mark.asyncio
 async def test_submit_decision_updates_file():
     """handle_submit_decision should update approval file with decision."""
     with tempfile.TemporaryDirectory() as d:
         root = Path(d)
         artifact = root / "spec.json"
         artifact.write_text('{"spec": true}', encoding="utf-8")
+        review = root / ".specs" / "test-spec" / "REVIEW.md"
+        review.parent.mkdir(parents=True, exist_ok=True)
+        review.write_text("# REVIEW\ncanonical packet\n", encoding="utf-8")
         await handle_request_approval(
             project_root=str(root),
             spec_name="test-spec",
@@ -104,6 +165,7 @@ async def test_submit_tasks_approval_blocked_on_invalid_spec_contract():
         specs_dir.mkdir(parents=True)
         # Deliberately invalid for strict schema+traceability gate.
         (specs_dir / "spec.json").write_text(json.dumps({"spec_name": "test-spec"}), encoding="utf-8")
+        (specs_dir / "REVIEW.md").write_text("# REVIEW\ncanonical packet\n", encoding="utf-8")
 
         await handle_request_approval(
             project_root=str(root),

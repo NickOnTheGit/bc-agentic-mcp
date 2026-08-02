@@ -17,3 +17,6 @@ share/out/
 evil/
 quick_test.py
 test_real_erp.py
+
+# deepwork progress (local orchestration state)
+.slim/deepwork/

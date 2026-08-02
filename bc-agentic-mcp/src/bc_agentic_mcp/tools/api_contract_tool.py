@@ -3,7 +3,7 @@ from pathlib import Path
 from bc_agentic_mcp.workspace import specs_root
 from typing import Any, Dict, List, Optional, Union
 
-from bc_agentic_mcp import api_contract, verification
+from bc_agentic_mcp import api_contract, security, verification
 from bc_agentic_mcp.spec_loader import load_spec
 
 
@@ -46,6 +46,16 @@ async def handle_api_contract(
         evidence = (
             f"{base_url}/{entity} contract {result.get('passed')}/{result.get('total')} passed"
         )
+        evidence_receipt = security.issue_evidence(
+            project_root=Path(project_root).resolve(),
+            spec_name=spec_name,
+            producer="bc_api_contract",
+            name=f"API contract {result.get('passed')}/{result.get('total')} ({entity})",
+            result="pass" if result.get("all_passed") else "fail",
+            covers=covers,
+            layer="api",
+            evidence=evidence,
+        )
         # Persist the EXPLICIT per-check list — aggregate-only records left the PR
         # template unable to name what each API check validated (observed live:
         # 'API contract 4/4' while the reviewer had to trust a bare count).
@@ -68,6 +78,8 @@ async def handle_api_contract(
             layer="api",
             evidence=evidence,
             executed_tests=executed_checks,
+            evidence_receipt=evidence_receipt,
         )
         result["evidence_recorded"] = True
+        result["evidence_receipt"] = evidence_receipt
     return result

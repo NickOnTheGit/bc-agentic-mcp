@@ -110,7 +110,8 @@ def test_replay_verification_gate_fails_closed_then_passes(golden_item):
             details={"name": name, "result": "pass", "covers": [i + 1],
                      "layer": "al-regression" if i else "al-container",
                      "validation_mode": "regression" if i else "item",
-                     "evidence": "container run acctest"},
+                     "evidence": "container run acctest",
+                     "evidence_source": "internal"},
         )
     gate2 = verification.gate(root, spec)
     digest = gate2["digest"]

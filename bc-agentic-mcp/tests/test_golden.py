@@ -10,7 +10,7 @@ from pathlib import Path
 
 import pytest
 
-from bc_agentic_mcp import code_pack, object_index
+from bc_agentic_mcp import code_pack, object_index, security
 from bc_agentic_mcp.workspace import specs_root
 
 GOLDEN = Path(__file__).parent / "fixtures" / "golden"
@@ -72,7 +72,20 @@ def _feature_folder(tmp_path, *, refinement=True, critique="ok", mismatches=0):
     d = specs_root(tmp_path) / "feature-x"
     d.mkdir(parents=True)
     (d / "approvals").mkdir()
-    (d / "approvals" / "plan.md").write_text("**Status:** pending\n- [ ] approve\n", encoding="utf-8")
+    token = security.issue_approval(
+        project_root=tmp_path,
+        spec_name="feature-x",
+        phase="plan",
+        status="pending",
+        artifact_path="",
+        artifact_sha256="",
+        summary="feature plan",
+        idempotency_key="feature-plan-test",
+    )
+    (d / "approvals" / "plan.md").write_text(
+        f"**Status:** pending\n**Approval token:** {token}\n- [ ] approve\n",
+        encoding="utf-8",
+    )
     (d / "FEATURE-PLAN.md").write_text("# plan", encoding="utf-8")
     (d / "feature_plan.json").write_text(json.dumps(
         {"generated_at": "2099-01-02T00:00:00"}), encoding="utf-8")

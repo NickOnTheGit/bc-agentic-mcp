@@ -25,7 +25,7 @@ bc-agentic-mission-control = "bc_agentic_mcp.mission_control.app:main"
 where = ["src"]
 
 [tool.setuptools.package-data]
-bc_agentic_mcp = ["prompts/*.md", "references/*", "templates/*.md", "mission_control/static/*"]
+bc_agentic_mcp = ["prompts/*.md", "references/*", "templates/*.md", "mission_control/static/*", "vendor/BCQuality/**/*"]
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"

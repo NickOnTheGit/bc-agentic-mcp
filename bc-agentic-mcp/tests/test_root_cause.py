@@ -5,7 +5,7 @@ from pathlib import Path
 
 import pytest
 
-from bc_agentic_mcp import advance, enforcement, item_context, lessons, workflow_policy
+from bc_agentic_mcp import advance, enforcement, item_context, lessons, security, workflow_policy
 from bc_agentic_mcp.tools.archive import handle_archive
 from bc_agentic_mcp.tools.root_cause import handle_root_cause
 from bc_agentic_mcp.tools.write_spec import handle_write_spec
@@ -189,7 +189,7 @@ async def test_write_spec_bug_lane_emits_regression_requirement(tmp_path):
     al = _seed_al_repo(tmp_path)
     handle_root_cause(str(tmp_path), "bug-1", "valuation job runs after feature removal",
                       "obsolete registration", [str(al.relative_to(tmp_path))], "remove it")
-    res = await handle_write_spec(
+    await handle_write_spec(
         str(tmp_path), "bug-1",
         human_bullets="Remove the obsolete valuation feature registration from MyTestTableFDN.",
         idempotency_key="bug-1-fix-1",
@@ -286,9 +286,17 @@ def _authorized_removal_spec(tmp: Path, spec: str, rel_target: str) -> Path:
                              "scope_mode": "strict"},
     }
     (sdir / "spec.json").write_text(json.dumps(spec_json), encoding="utf-8")
-    (sdir / "approvals" / "implement.md").write_text("**Status:** approve\n", encoding="utf-8")
     (sdir / "quality_gate.json").write_text(json.dumps({"pass": True}), encoding="utf-8")
     (sdir / "REVIEW.md").write_text("# review\n", encoding="utf-8")
+    token = security.issue_approval(
+        project_root=tmp, spec_name=spec, phase="implement", status="approve",
+        artifact_path=str(sdir / "REVIEW.md"),
+        artifact_sha256=security.file_digest(sdir / "REVIEW.md"),
+        summary="test removal approval", idempotency_key=f"test-{spec}-implement",
+    )
+    (sdir / "approvals" / "implement.md").write_text(
+        f"**Status:** approve\n**Approval token:** {token}\n", encoding="utf-8"
+    )
     return sdir
 
 
@@ -337,7 +345,7 @@ async def test_implement_delete_removes_file_with_backup(tmp_path):
 @pytest.mark.asyncio
 async def test_write_spec_removal_bug_grounds_removals_and_cleanup_upgrade(tmp_path):
     _capture_bug(tmp_path, "bug-1")
-    al = _seed_al_repo(tmp_path)
+    _seed_al_repo(tmp_path)
     # A second object that the bug orders removed.
     dead = tmp_path / "extensions" / "BaseApp" / "src" / "DeadWorker.Codeunit.al"
     dead.write_text("codeunit 50101 DeadWorkerFDN\n{\n  trigger OnRun() begin end;\n}\n",

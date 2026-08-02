@@ -1933,6 +1933,11 @@ async def handle_prepare_review(
 
     _append_enforcement_to_review(review_path=review_path, quality_gate=quality_gate, quality_path=quality_path)
 
+    # Vendor health check: surface drift or missing vendor in the packet.
+    from bc_agentic_mcp import knowledge as _knowledge
+    vendor_health = _knowledge.check_vendor_health(root)
+    vendor_health_warnings = vendor_health.get("errors") or []
+
     return {
         "status": "ready_for_review",
         "review_path": str(review_path),
@@ -1948,4 +1953,6 @@ async def handle_prepare_review(
         "quality_gate": quality_gate,
         "quality_gate_path": str(quality_path),
         "trace_path": str(trace_path) if trace_path else None,
+        "vendor_health": vendor_health,
+        "vendor_health_warnings": vendor_health_warnings,
     }

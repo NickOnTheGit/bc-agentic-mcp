@@ -14,12 +14,13 @@ Infrastructure lifecycle:
   2. Rate limiter instantiated per-session
   3. Audit logger instantiated (writes to .specs/.audit/)
   4. AL tool discovered (graceful degradation)
-  5. All 16 tools registered with rate-limit + audit wrappers
+  5. All registered tools use rate-limit + audit wrappers
   6. Tool integrity verification (hash-pinning, GAP 7)
 """
 import argparse
 import asyncio
 import inspect
+import math
 import os
 import sys
 import time
@@ -36,6 +37,7 @@ from bc_agentic_mcp.audit import AuditLogger
 from bc_agentic_mcp.errors import MCPError, ErrorCode, error_response
 from bc_agentic_mcp import attempts
 from bc_agentic_mcp import checkpoints as memory
+from bc_agentic_mcp import security
 from bc_agentic_mcp import timeline
 from bc_agentic_mcp.path_enforcement import enforce_response_paths
 from bc_agentic_mcp.workflow_policy import check_tool_call, infer_stage
@@ -54,7 +56,6 @@ from bc_agentic_mcp.tools.status import handle_status
 from bc_agentic_mcp.tools.recall import handle_recall, handle_checkpoint
 from bc_agentic_mcp.tools.verify import handle_verify, handle_record_test
 from bc_agentic_mcp.tools.implement import (
-    handle_implement,
     handle_implement_alias,
     handle_implement_context,
     handle_implement_delete,
@@ -112,6 +113,7 @@ from bc_agentic_mcp.tools.pr_thread_guard import handle_guard_pr_thread_resoluti
 from bc_agentic_mcp.detectors import handle_detect
 from bc_agentic_mcp.review import handle_review
 from bc_agentic_mcp.code_context import handle_read_code_context
+from bc_agentic_mcp.tools.knowledge_tool import handle_get_knowledge_article
 
 
 # ---------------------------------------------------------------------------
@@ -377,14 +379,16 @@ async def _run_tool(tool_name: str, handler, session_id: str = "default", **kwar
     """
     ctx = _get_ctx()
 
-    # 1. Rate limit check
-    blocked, retry_after = ctx.rate_limiter.check(tool_name)
-    if blocked:
+    # 1. Rate limit check. Consume tokens at the live boundary; a non-consuming
+    # check only reports capacity and leaves the server unbounded.
+    allowed, retry_after = ctx.rate_limiter.consume(tool_name)
+    if not allowed:
+        retry_after_int = max(1, math.ceil(retry_after))
         return error_response(
             ErrorCode.CLIENT_ERROR,
             f"Rate limit exceeded for {tool_name}",
             hint=f"Wait {retry_after:.1f}s before retrying",
-            retry_after=int(retry_after),
+            retry_after=retry_after_int,
         )
 
     # 1b. MCP orchestration policy check (role + deterministic stage routing)
@@ -617,7 +621,7 @@ def _verify_tool_integrity(mcp: FastMCP, specs_dir: Path) -> None:
 
 
 def create_server(project_root: Optional[str] = None) -> FastMCP:
-    """Create and configure the MCP server with all 16 tools + infrastructure."""
+    """Create and configure the MCP server with all registered tools + infrastructure."""
     global _ctx
     root = Path(project_root or os.getcwd()).resolve()
 
@@ -669,7 +673,7 @@ def create_server(project_root: Optional[str] = None) -> FastMCP:
     mcp = FastMCP("bc-agentic-mcp")
 
     # -----------------------------------------------------------------------
-    # Register all 16 tools with rate-limiting + audit wrapping
+    # Register all tools with rate-limiting + audit wrapping
     # -----------------------------------------------------------------------
 
     @mcp.tool(name="bc_init")
@@ -972,9 +976,14 @@ def create_server(project_root: Optional[str] = None) -> FastMCP:
         covers: Any,
         layer: str = "",
         evidence: str = "",
+        evidence_receipt: str = "",
         project_root: Optional[str] = None,
     ) -> Dict[str, Any]:
-        """Record a test result as durable evidence covering acceptance criteria (covers='all' or [indices])."""
+        """Record evidence only when paired with a receipt from an execution tool.
+
+        ``bc_run_tests`` and ``bc_api_contract`` issue receipts after their own
+        execution. Caller-supplied evidence text without one is rejected.
+        """
         return await _run_tool(
             "bc_record_test", handle_record_test,
             project_root=project_root or str(_get_ctx().config.project_root),
@@ -984,6 +993,7 @@ def create_server(project_root: Optional[str] = None) -> FastMCP:
             covers=covers,
             layer=layer,
             evidence=evidence,
+            evidence_receipt=evidence_receipt,
         )
 
     @mcp.tool(name="bc_verify")
@@ -1881,11 +1891,23 @@ def create_server(project_root: Optional[str] = None) -> FastMCP:
         changed_files: Optional[List[str]] = None,
         rubric: Optional[Dict[str, Any]] = None,
         verdict: str = "",
+        knowledge_applied: Optional[List[str]] = None,
+        knowledge_receipts: Optional[List[str]] = None,
         project_root: Optional[str] = None,
     ) -> Dict[str, Any]:
         """Layer 3: separate-reviewer packet (no findings) or record reviewer findings (triggers reflection).
-        Pass rubric={grounding, coverage, conventions, risk} (each 0.0-1.0, judge-style) to make review
-        quality MEASURABLE across items and prompt versions."""
+
+        WITHOUT findings: returns the review packet (charter + checklist + BCQuality knowledge worklist).
+        WITH findings: records findings as checkpoints AND returns them inline alongside a
+        ``human_gate_required: true`` flag.  The agent MUST present the findings to the human
+        immediately and ask for an explicit approve/reject/change-request decision before advancing
+        the lifecycle. Never declare the review complete without surfacing findings to the human.
+
+        Pass rubric={grounding, coverage, conventions, risk} (each 0.0-1.0, judge-style) to make
+        review quality MEASURABLE across items and prompt versions.
+        Pass knowledge_applied=[list of BCQuality article paths read via bc_get_knowledge_article]
+        alongside findings. The machine verifies signed reads for the current packet_id;
+        caller-supplied paths alone are not evidence."""
         return await _run_tool(
             "bc_review", handle_review,
             project_root=project_root or str(_get_ctx().config.project_root),
@@ -1894,6 +1916,8 @@ def create_server(project_root: Optional[str] = None) -> FastMCP:
             changed_files=changed_files,
             rubric=rubric,
             verdict=verdict,
+            knowledge_applied=knowledge_applied,
+            knowledge_receipts=knowledge_receipts,
         )
 
     @mcp.tool(name="bc_read_code_context")
@@ -1914,17 +1938,43 @@ def create_server(project_root: Optional[str] = None) -> FastMCP:
             require_clean_latest=require_clean_latest,
         )
 
+    @mcp.tool(name="bc_get_knowledge_article")
+    async def bc_get_knowledge_article(
+        path: str,
+        spec_name: Optional[str] = None,
+        packet_id: str = "",
+        project_root: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """Read a BCQuality knowledge article in full (## Best Practice, ## Anti Pattern)
+        plus companion golden-template files (.good.al / .bad.al).
+
+        ``path`` is the relative path from the knowledge worklist. Pass the current
+        ``spec_name`` and review ``packet_id`` so the successful read is signed and
+        bound to that packet.
+
+        REQUIRED: call this for each article in the 'knowledge' worklist BEFORE
+        submitting findings to bc_review. The worklist entry is a discovery hint only;
+        the normative rule bodies and AL examples are in the full content returned here.
+        """
+        return await _run_tool(
+            "bc_get_knowledge_article", handle_get_knowledge_article,
+            project_root=project_root or str(_get_ctx().config.project_root),
+            path=path,
+            spec_name=spec_name,
+            packet_id=packet_id,
+        )
+
     # -------------------------------------------------------------------
     # GAP 8: Health check (for Docker/K8s liveness probes)
     # -------------------------------------------------------------------
     @mcp.tool(name="_health")
     async def _health() -> Dict[str, Any]:
-        return {"status": "ok", "version": __version__}
+        return {"status": "ok", "version": __version__, "security_mode": security.security_mode()}
 
     @mcp.tool(name="bc_health")
     async def bc_health() -> Dict[str, Any]:
         """Canonical name for the health probe (F3); `_health` kept one release."""
-        return {"status": "ok", "version": __version__}
+        return {"status": "ok", "version": __version__, "security_mode": security.security_mode()}
 
     @mcp.tool(name="bc_worktree")
     async def bc_worktree(

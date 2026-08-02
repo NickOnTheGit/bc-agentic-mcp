@@ -54,6 +54,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
 from bc_agentic_mcp.lessons import bm25_scores
+from bc_agentic_mcp import security
 from bc_agentic_mcp.workspace import external_base, specs_root
 
 SCHEMA_VERSION = 1  # BCQuality knowledge-index schema version (compatibility contract)
@@ -72,13 +73,20 @@ RELEVANCE_FLOOR_RATIO = 0.25
 # precedent). The vendor root PATH may be machine-local (env override); the
 # POLICY — which layers, what is allowed/denied, which commit is pinned — is
 # repo-scoped and reviewed like code.
+#
+# BCQuality skills/ dispatch protocol is deliberately NOT used here.  bc-agentic-mcp
+# substitutes BM25 retrieval (context-sensitive, no entry.md round-trip required).
+# Only BCQuality's knowledge layer is consumed.
 DEFAULT_POLICY: Dict[str, Any] = {
     "enabled": True,
     "vendor": {"root": "", "pinned_commit": ""},
-    "enabled_layers": [],  # empty = every layer present on disk
+    "enabled_layers": [],  # empty = every layer present on disk (incl. bundled vendor)
     "allow": [],           # fnmatch globs against '<layer>/<rel>'; empty = allow all
     "deny": [],            # fnmatch globs against '<layer>/<rel>'; deny wins
 }
+
+BUNDLED_VENDOR_DIR = "BCQuality"
+MANIFEST_FILENAME = "MANIFEST.json"
 
 _FRONTMATTER_KEY_RE = re.compile(r"^\s*([a-zA-Z][\w-]*)\s*:\s*(.*)$")
 _LIST_VALUE_RE = re.compile(r"^\[(.*)\]$")
@@ -135,8 +143,19 @@ def load_policy(project_root: Path) -> Dict[str, Any]:
     return default
 
 
+def _bundled_vendor_root() -> Optional[Path]:
+    """Package-data vendor root: ships with pip install, always present."""
+    candidate = Path(__file__).parent / "vendor" / BUNDLED_VENDOR_DIR
+    return candidate if candidate.is_dir() else None
+
+
 def vendor_root(project_root: Optional[Path] = None) -> Optional[Path]:
-    """Vendor clone root: env override (machine-local path) > committed policy."""
+    """Vendor root resolution chain: env override > committed policy > bundled package data.
+
+    The bundled snapshot (``src/bc_agentic_mcp/vendor/BCQuality/``) ships with
+    ``pip install`` so BCQuality enforcement is active by default with zero user
+    configuration. Override via ``BC_MCP_KNOWLEDGE_ROOT`` or policy ``vendor.root``.
+    """
     env = os.environ.get(ENV_VENDOR_ROOT)
     if env:
         return Path(env).expanduser()
@@ -144,7 +163,7 @@ def vendor_root(project_root: Optional[Path] = None) -> Optional[Path]:
         raw = str((load_policy(project_root).get("vendor") or {}).get("root") or "").strip()
         if raw:
             return Path(raw).expanduser()
-    return None
+    return _bundled_vendor_root()
 
 
 def knowledge_roots(project_root: Path) -> List[Tuple[str, Path]]:
@@ -250,6 +269,14 @@ def parse_article(path: Path) -> Optional[Dict[str, Any]]:
     }
     for key in _DIMENSION_KEYS:
         parsed[key] = _as_list(fm.get(key))
+    # Companion example files (golden templates): <slug>.good.al / <slug>.bad.al
+    companions = []
+    for kind, suffix in (("good", ".good.al"), ("bad", ".bad.al")):
+        sibling = path.parent / (path.stem + suffix)
+        if sibling.exists():
+            companions.append({"kind": kind, "path": str(sibling)})
+    if companions:
+        parsed["companions"] = companions
     return parsed
 
 
@@ -315,7 +342,7 @@ def _fingerprint(project_root: Path, files: List[Tuple[str, Path, Path, str]]) -
 
 
 def _vendor_commit(root: Optional[Path]) -> str:
-    """HEAD SHA of the vendor clone for provenance; '' when unknown (fail-open)."""
+    """HEAD SHA of the vendor root; falls back to MANIFEST.json for bundled snapshots."""
     if root is None or not root.exists():
         return ""
     try:
@@ -323,9 +350,119 @@ def _vendor_commit(root: Optional[Path]) -> str:
             ["git", "-C", str(root), "rev-parse", "HEAD"],
             capture_output=True, text=True, timeout=10, stdin=subprocess.DEVNULL,
         )
-        return out.stdout.strip() if out.returncode == 0 else ""
+        if out.returncode == 0:
+            return out.stdout.strip()
     except (OSError, subprocess.SubprocessError):
-        return ""
+        pass
+    # Bundled snapshot has no .git — read the committed MANIFEST.json instead.
+    manifest = root / MANIFEST_FILENAME
+    if manifest.exists():
+        try:
+            return json.loads(manifest.read_text(encoding="utf-8")).get("commit", "")
+        except (OSError, json.JSONDecodeError):
+            pass
+    return ""
+
+
+def check_vendor_health(project_root: Optional[Path] = None) -> Dict[str, Any]:
+    """Return a vendor health snapshot used in pre-flight checks and review packets.
+
+    ``ok`` is True when vendor is present and not drifted from the pinned commit.
+    ``bundled`` is True when the active root is the package-data snapshot (no user
+    configuration required). ``errors`` is a list of human-readable problems.
+    """
+    root = Path(project_root).resolve() if project_root else None
+    vroot = vendor_root(root)
+    bundled_root = _bundled_vendor_root()
+    is_bundled = vroot is not None and bundled_root is not None and vroot == bundled_root
+    configured = bool(
+        os.environ.get(ENV_VENDOR_ROOT)
+        or (root is not None
+            and str((load_policy(root).get("vendor") or {}).get("root") or "").strip())
+    )
+    present = vroot is not None and vroot.is_dir()
+    commit = _vendor_commit(vroot) if present else ""
+    pinned = (
+        str((load_policy(root).get("vendor") or {}).get("pinned_commit") or "").strip()
+        if root else ""
+    )
+    drift = bool(commit and pinned and commit != pinned)
+    errors: List[str] = []
+    if not present:
+        errors.append(
+            "vendor root not found — run Scripts/Update-BCQuality.ps1 to populate"
+        )
+    elif drift:
+        errors.append(
+            f"vendor drifted from pinned commit "
+            f"(current={commit[:12]}, pinned={pinned[:12]})"
+        )
+    return {
+        "ok": present and not drift,
+        "configured": configured,
+        "bundled": is_bundled,
+        "present": present,
+        "root": str(vroot) if vroot else "",
+        "commit": commit[:40] if commit else "",
+        "pinned_commit": pinned[:40] if pinned else "",
+        "drift": drift,
+        "errors": errors,
+    }
+
+
+def validate_knowledge_receipts(
+    project_root: Path,
+    spec_name: str,
+    packet_id: str,
+    article_paths: List[str],
+    vendor_commit: str,
+    receipts: List[str],
+) -> Dict[str, Any]:
+    """Validate server-issued article-read receipts for one review packet."""
+    wanted = set(article_paths)
+    if not wanted:
+        return {"ok": not receipts, "paths": [], "receipts": [], "reason": ""}
+    index = load_knowledge_index(project_root)
+    by_path = {
+        str(article.get("path")): article
+        for article in (index.get("articles") or [])
+        if article.get("path")
+    }
+    valid: Dict[str, str] = {}
+    for token in receipts:
+        payload = security.verify(
+            token,
+            "knowledge-read",
+            {
+                "v": 1,
+                "project": security.project_fingerprint(Path(project_root)),
+                "spec_name": spec_name,
+                "packet_id": packet_id,
+            },
+        )
+        if not payload or payload.get("vendor_commit") != vendor_commit:
+            continue
+        path = str(payload.get("path") or "")
+        article = by_path.get(path)
+        file_name = str((article or {}).get("file") or "")
+        if path not in wanted or not file_name:
+            continue
+        try:
+            current_digest = security.digest_text(
+                Path(file_name).read_text(encoding="utf-8", errors="replace")
+            )
+        except OSError:
+            continue
+        if current_digest == payload.get("article_sha256"):
+            valid[path] = token
+    missing = sorted(wanted - set(valid))
+    return {
+        "ok": not missing,
+        "paths": sorted(valid),
+        "receipts": [valid[path] for path in sorted(valid)],
+        "missing": missing,
+        "reason": "" if not missing else "missing valid server-issued article-read receipts",
+    }
 
 
 def build_knowledge_index(
@@ -382,6 +519,7 @@ def build_knowledge_index(
             "description": parsed["description"] if full else lean_description(parsed["description"]),
             "parsed": True,
             "file": str(f),
+            "companions": parsed.get("companions", []),
         })
 
     index: Dict[str, Any] = {

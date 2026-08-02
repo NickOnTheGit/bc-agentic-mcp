@@ -541,13 +541,15 @@ async def handle_implement(
 def _knowledge_worklist_for_context(
     root: Path, spec_name: str, task_ids: List[str],
 ) -> List[Dict[str, Any]]:
-    """Surface matched knowledge articles BEFORE code is written (index-aware
-    context, BCQuality contract): lean discovery hints ranked against the
-    Charter + selected tasks; the implementer reads each listed file in full
-    for its ## Best Practice / ## Anti Pattern rules. Fail-open -> []."""
+    """Surface matched knowledge articles BEFORE code is written (BCQuality contract):
+    lean discovery hints ranked against the Charter + selected tasks.  The implementer
+    calls ``bc_get_knowledge_article`` for each entry to read the full article plus
+    companion .good.al/.bad.al golden templates before writing code.
+    Fail-closed when vendor is present: errors surface as a sentinel entry."""
+    from bc_agentic_mcp import checkpoints as memory
+    from bc_agentic_mcp import knowledge
+    vendor_present = knowledge.vendor_root(root) is not None
     try:
-        from bc_agentic_mcp import checkpoints as memory
-        from bc_agentic_mcp import knowledge
         charter = memory.load_charter(root, spec_name) or {}
         query = " ".join(filter(None, [
             str(charter.get("purpose") or ""),
@@ -556,9 +558,13 @@ def _knowledge_worklist_for_context(
         ]))
         return [{"path": a.get("path"), "layer": a.get("layer"), "title": a.get("title"),
                  "description": a.get("description"), "file": a.get("file"),
-                 "score": a.get("score")}
+                 "score": a.get("score"), "companions": a.get("companions", [])}
                 for a in knowledge.select_articles(root, query)]
-    except Exception:  # noqa: BLE001 — advisory, never blocks context prep
+    except Exception:  # noqa: BLE001
+        if vendor_present:
+            return [{"path": "__error__", "layer": "", "title": "Knowledge retrieval failed",
+                     "description": "BCQuality corpus error — re-index or check vendor root.",
+                     "file": "", "score": 0, "companions": []}]
         return []
 
 

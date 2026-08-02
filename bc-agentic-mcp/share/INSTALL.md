@@ -71,6 +71,13 @@ Then merge the generated `mcp.json.generated` into VS Code's MCP config
 bc-agentic-mission-control --project-root "<your AL repo>" --specs-root "<workspaces>" --open
 ```
 
+The cockpit binds to loopback by default. A non-loopback `--host` requires
+`BC_MISSION_CONTROL_TOKEN`; API calls use `Authorization: Bearer <token>` and
+remote agent dispatch remains disabled unless `BC_MISSION_CONTROL_ALLOW_REMOTE_DISPATCH=1`
+is explicitly set behind a trusted network boundary. Set `BC_MCP_SECURITY_SECRET`
+to keep server-signed approvals, runtime evidence, and knowledge-read receipts valid
+after a server restart.
+
 ## Prerequisites on the target machine
 
 - Python 3.10+ and VS Code with GitHub Copilot (agent mode)

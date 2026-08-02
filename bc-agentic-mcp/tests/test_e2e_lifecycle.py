@@ -23,6 +23,8 @@ from pathlib import Path
 
 import pytest
 
+from bc_agentic_mcp import security
+
 GOLDEN = Path(__file__).parent / "fixtures" / "golden"
 
 
@@ -217,9 +219,15 @@ def test_full_lifecycle_walk_via_server(walk_env):
         _fail(t, "bc_status lost its on_disk recovery map")
 
     # --- evidence ---------------------------------------------------------
+    evidence = "container=e2e-sim passed=1/1 (simulated walk evidence)"
+    receipt = security.issue_evidence(
+        project_root=root_path, spec_name=spec, producer="bc_run_tests",
+        name="FacilitiesOverviewShowsAddressCount", result="pass", covers="all",
+        layer="al-unit", evidence=evidence,
+    )
     out = _call(tools, t, "bc_record_test", project_root=root, spec_name=spec,
                 name="FacilitiesOverviewShowsAddressCount", result="pass", covers="all",
-                layer="al-unit", evidence="container=e2e-sim passed=1/1 (simulated walk evidence)")
+                layer="al-unit", evidence=evidence, evidence_receipt=receipt)
     if not out.get("recorded"):
         _fail(t, "bc_record_test refused simulated evidence")
 

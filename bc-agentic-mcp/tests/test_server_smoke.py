@@ -16,8 +16,8 @@ def test_init_tool_exists():
     assert "bc_init" in tool_names
 
 
-def test_all_sixteen_tools_registered():
-    """All core tools must be registered."""
+def test_all_registered_tools():
+    """The live MCP server must expose the complete registered tool surface."""
     from bc_agentic_mcp.server import create_server
     server = create_server()
     tool_names = {t.name for t in server._tool_manager._tools.values()}
@@ -69,11 +69,12 @@ def test_all_sixteen_tools_registered():
         "bc_intake_graduate",
         "bc_analyze_consistency",
         "bc_tool_health",
+        "bc_get_knowledge_article",
         "bc_push_items",
         "_health",
     }
     assert expected <= tool_names
-    assert len(tool_names) == 72
+    assert len(tool_names) == 73
 
 @pytest.mark.asyncio
 async def test_bc_init_creates_specs_dir(tmp_path):
@@ -85,3 +86,6 @@ async def test_bc_init_creates_specs_dir(tmp_path):
     assert "created_paths" in result
     assert (tmp_path / ".specs" / "state.json").exists()
     assert (tmp_path / ".specs" / "CONSTITUTION.md").exists()
+
+
+

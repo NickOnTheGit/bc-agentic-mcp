@@ -6,13 +6,15 @@ spams the MCP audit log. Mutating actions go through bridge.McpBridge instead.
 """
 from __future__ import annotations
 
+from collections import Counter
+from datetime import datetime, timezone
 import json
 import re
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 from bc_agentic_mcp.workspace import specs_root
-from bc_agentic_mcp import workflow_policy
+from bc_agentic_mcp import timeline, workflow_policy
 
 SPEC_NAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*$")
 
@@ -422,4 +424,169 @@ def item_pulse(project_root: Path, spec_name: str) -> Dict[str, Any]:
         "approvals": parse_approvals(item_dir),
         "artifacts": list_artifacts(item_dir),
         "events": recent,
+    }
+
+ATLAS_LAYER_NODES: List[Dict[str, Any]] = [
+    {"id": "layer:cockpit", "title": "Mission Control cockpit", "kind": "layer", "summary": "Human-facing browser control surface for launch, review, and deterministic orchestration.", "files": ["src/bc_agentic_mcp/mission_control/app.py", "src/bc_agentic_mcp/mission_control/static/index.html", "src/bc_agentic_mcp/mission_control/static/app.js"]},
+    {"id": "layer:projection", "title": "Read projections", "kind": "layer", "summary": "File-backed projections over .specs used for high-frequency polling without action side-effects.", "files": ["src/bc_agentic_mcp/mission_control/views.py"]},
+    {"id": "layer:bridge", "title": "MCP bridge", "kind": "layer", "summary": "Single serialized stdio client to the real MCP server so all gates remain active.", "files": ["src/bc_agentic_mcp/mission_control/bridge.py"]},
+    {"id": "layer:runtime", "title": "Server runtime", "kind": "layer", "summary": "Tool registration, audit, retries, and timeout envelope around each MCP call.", "files": ["src/bc_agentic_mcp/server.py", "src/bc_agentic_mcp/tool_defense.py"]},
+    {"id": "layer:policy", "title": "Policy + gates", "kind": "layer", "summary": "Role/stage allowlists and deterministic enforcement walls.", "files": ["src/bc_agentic_mcp/workflow_policy.py", "src/bc_agentic_mcp/enforcement.py", "src/bc_agentic_mcp/gate.py"]},
+    {"id": "layer:evidence", "title": "Evidence + memory", "kind": "layer", "summary": "Timeline, tests, verification, review artifacts, and lessons for closure.", "files": ["src/bc_agentic_mcp/timeline.py", "src/bc_agentic_mcp/verification.py", "src/bc_agentic_mcp/review.py"]},
+]
+
+ATLAS_GATES: List[Dict[str, Any]] = [
+    {"id": "gate:clarifications", "title": "Clarification gate", "kind": "gate", "summary": "Ambiguity is resolved with evidence-grounded answers before planning can proceed.", "tools": ["bc_clarify", "bc_answer_clarification", "bc_auto_clarify"]},
+    {"id": "gate:plan_packet", "title": "Plan packet gate", "kind": "gate", "summary": "A canonical review packet is required before requesting human approval.", "tools": ["bc_prepare_review", "bc_request_approval"]},
+    {"id": "gate:human_decision", "title": "Human decision gate", "kind": "gate", "summary": "The recorded human decision governs whether implementation is authorized.", "tools": ["bc_submit_decision"]},
+    {"id": "gate:implementation", "title": "Implementation gate", "kind": "gate", "summary": "Write operations are fenced by approval state and scope boundaries.", "tools": ["bc_implement", "bc_implement_write", "bc_implement_delete"]},
+    {"id": "gate:quality", "title": "Quality gate", "kind": "gate", "summary": "Detectors and review must pass on the fresh diff.", "tools": ["bc_quality_check", "bc_detect", "bc_review"]},
+    {"id": "gate:verification", "title": "Verification gate", "kind": "gate", "summary": "Runtime evidence and validation classes decide done/not-done.", "tools": ["bc_generate_tests", "bc_run_tests", "bc_verify", "bc_record_test", "bc_api_contract"]},
+    {"id": "gate:pr", "title": "PR gate", "kind": "gate", "summary": "PR preparation, comments, and merge status are explicit lifecycle steps.", "tools": ["bc_prepare_pr", "bc_create_pr", "bc_get_review_comments", "bc_resolve_review_comment", "bc_merge_status"]},
+    {"id": "gate:archive", "title": "Archive gate", "kind": "gate", "summary": "Closure requires archived evidence plus reflection/lessons.", "tools": ["bc_archive", "bc_feedback", "bc_reflect", "bc_lessons", "bc_promote_lesson"]},
+]
+
+
+def _atlas_tool_names() -> List[str]:
+    tools = set(workflow_policy.COMMON_TOOLS)
+    tools.update(workflow_policy.PLANNER_TOOLS)
+    tools.update(workflow_policy.IMPLEMENTER_TOOLS)
+    tools.update(workflow_policy.GATEKEEPER_TOOLS)
+    tools.update(timeline.TOOL_PHASE.keys())
+    tools.add("_health")
+    return sorted(tools)
+
+
+def _atlas_tool_family(tool: str) -> str:
+    if tool.startswith("bc_intake_"):
+        return "intake"
+    if tool.startswith("bc_capture_feature") or tool.startswith("bc_refine_feature") or tool.startswith("bc_plan_feature"):
+        return "feature"
+    if tool in {"bc_prepare_pr", "bc_create_pr", "bc_get_review_comments", "bc_resolve_review_comment", "bc_merge_status"}:
+        return "pr"
+    if tool in {"bc_implement", "bc_implement_context", "bc_implement_write", "bc_implement_delete", "bc_generate_tests", "bc_run_tests", "bc_verify", "bc_record_test"}:
+        return "implementation"
+    if tool in {"bc_archive", "bc_feedback", "bc_reflect", "bc_lessons", "bc_promote_lesson"}:
+        return "closure"
+    if tool in {"bc_status", "bc_recall", "bc_checkpoint", "bc_timeline", "bc_env_preflight", "bc_tool_health", "bc_worktree", "_health", "bc_health"}:
+        return "infrastructure"
+    return "planning"
+
+
+def _atlas_tool_summary(tool: str) -> str:
+    phase = timeline.TOOL_PHASE.get(tool)
+    if phase:
+        return f"Completes phase: {phase.replace('_', ' ')}."
+    if tool in workflow_policy.COMMON_TOOLS:
+        return "Cross-stage supporting tool available across lifecycle boundaries."
+    return f"{tool} participates in the deterministic BC MCP lifecycle."
+
+
+def _atlas_tool_nodes() -> List[Dict[str, Any]]:
+    nodes: List[Dict[str, Any]] = []
+    role_order = ["planner", "implementer", "gatekeeper", "orchestrator"]
+    for tool in _atlas_tool_names():
+        roles = [r for r in role_order if tool in workflow_policy.ROLE_ALLOWLIST.get(r, set())]
+        phase = timeline.TOOL_PHASE.get(tool, "")
+        stage = workflow_policy._phase_to_stage(phase) if phase else (
+            "plan" if tool in workflow_policy.PLANNER_TOOLS else
+            "implement" if tool in workflow_policy.IMPLEMENTER_TOOLS else
+            "verify" if tool in workflow_policy.GATEKEEPER_TOOLS else
+            "plan"
+        )
+        nodes.append({
+            "id": f"tool:{tool}",
+            "title": tool,
+            "kind": "tool",
+            "family": _atlas_tool_family(tool),
+            "roles": roles,
+            "phase": phase,
+            "stage": stage,
+            "summary": _atlas_tool_summary(tool),
+        })
+    return nodes
+
+
+def _atlas_phase_nodes() -> List[Dict[str, Any]]:
+    seen = set()
+    nodes: List[Dict[str, Any]] = []
+    for sequence in (ITEM_PIPELINE, FEATURE_PIPELINE, INTAKE_PIPELINE):
+        for phase in sequence:
+            if phase in seen:
+                continue
+            seen.add(phase)
+            nodes.append({
+                "id": f"phase:{phase}",
+                "title": phase.replace("_", " "),
+                "kind": "phase",
+                "stage": workflow_policy._phase_to_stage(phase),
+                "summary": f"Lifecycle phase: {phase.replace('_', ' ')}.",
+                "tools": [tool for tool, mapped in timeline.TOOL_PHASE.items() if mapped == phase],
+            })
+    # Include lane-specific phases such as bug diagnosis even when they are
+    # inserted dynamically into an item's pipeline.
+    for phase in timeline.TOOL_PHASE.values():
+        if phase in seen:
+            continue
+        seen.add(phase)
+        nodes.append({
+            "id": f"phase:{phase}",
+            "title": phase.replace("_", " "),
+            "kind": "phase",
+            "stage": workflow_policy._phase_to_stage(phase),
+            "summary": f"Lifecycle phase: {phase.replace('_', ' ')}.",
+            "tools": [tool for tool, mapped in timeline.TOOL_PHASE.items() if mapped == phase],
+        })
+    return nodes
+
+
+def _atlas_edges() -> List[Dict[str, str]]:
+    edges: List[Dict[str, str]] = []
+    for tool, phase in timeline.TOOL_PHASE.items():
+        edges.append({"from": f"tool:{tool}", "to": f"phase:{phase}", "kind": "completes"})
+    for gate in ATLAS_GATES:
+        for tool in gate["tools"]:
+            edges.append({"from": gate["id"], "to": f"tool:{tool}", "kind": "guards"})
+    for layer in ATLAS_LAYER_NODES:
+        layer_id = layer["id"]
+        if layer_id == "layer:cockpit":
+            orbit = ["bc_status", "bc_advance", "bc_request_approval"]
+        elif layer_id == "layer:projection":
+            orbit = ["bc_timeline", "bc_feature_status", "bc_tool_health"]
+        elif layer_id == "layer:bridge":
+            orbit = ["bc_run_tests", "bc_env_preflight", "bc_api_contract"]
+        elif layer_id == "layer:runtime":
+            orbit = ["bc_init", "bc_worktree", "bc_push_items"]
+        elif layer_id == "layer:policy":
+            orbit = ["bc_answer_clarification", "bc_submit_decision", "bc_detect", "bc_review"]
+        else:
+            orbit = ["bc_verify", "bc_archive", "bc_reflect", "bc_get_knowledge_article"]
+        for tool in orbit:
+            edges.append({"from": layer_id, "to": f"tool:{tool}", "kind": "orbits"})
+    return edges
+
+
+def atlas(project_root: Path) -> Dict[str, Any]:
+    """Global BC MCP atlas payload for interactive cockpit visualization."""
+    over = overview(project_root)
+    items = over.get("items") or []
+    phase_counts = Counter(item.get("phase") or "new" for item in items)
+    return {
+        "generated_at": datetime.now(timezone.utc).isoformat(),
+        "project_root": over.get("project_root"),
+        "live": {
+            "items_total": len(items),
+            "pending_approvals": sum(int(item.get("pending_approvals") or 0) for item in items),
+            "open_questions": sum(int(item.get("open_questions") or 0) for item in items),
+            "feature_items": sum(1 for item in items if item.get("is_feature")),
+            "intake_items": sum(1 for item in items if item.get("is_intake")),
+            "phase_counts": dict(sorted(phase_counts.items())),
+        },
+        "sections": [
+            {"id": "layers", "title": "Layers", "summary": "System architecture layers.", "nodes": ATLAS_LAYER_NODES},
+            {"id": "gates", "title": "Gates", "summary": "Human + deterministic gates.", "nodes": ATLAS_GATES},
+            {"id": "tools", "title": "Tools", "summary": "Registered tool surface.", "nodes": _atlas_tool_nodes()},
+            {"id": "phases", "title": "Transitions", "summary": "Lifecycle transitions.", "nodes": _atlas_phase_nodes()},
+        ],
+        "edges": _atlas_edges(),
     }

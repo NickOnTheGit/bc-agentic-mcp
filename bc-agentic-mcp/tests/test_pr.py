@@ -659,6 +659,9 @@ def test_approval_accepts_canonical_and_legacy_phases():
 def test_plan_approval_authorizes_implementation(tmp_path):
     art = tmp_path / "spec.json"
     art.write_text("{}", encoding="utf-8")
+    specs_dir = tmp_path / ".specs" / "item-1"
+    specs_dir.mkdir(parents=True)
+    (specs_dir / "REVIEW.md").write_text("# REVIEW\nplan review packet\n", encoding="utf-8")
 
     async def flow():
         await approval_tool.handle_request_approval(
@@ -676,6 +679,9 @@ def test_plan_approval_authorizes_implementation(tmp_path):
 def test_legacy_phase_flags_deprecation(tmp_path):
     art = tmp_path / "TASKS.md"
     art.write_text("# tasks", encoding="utf-8")
+    review = tmp_path / ".specs" / "item-1" / "REVIEW.md"
+    review.parent.mkdir(parents=True, exist_ok=True)
+    review.write_text("# REVIEW\ncanonical packet\n", encoding="utf-8")
 
     async def flow():
         await approval_tool.handle_request_approval(

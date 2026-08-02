@@ -17,6 +17,7 @@ async def handle_record_test(
     covers: Union[str, List[int]],
     layer: str = "",
     evidence: str = "",
+    evidence_receipt: str = "",
 ) -> Dict[str, Any]:
     """Record a test result as durable evidence covering acceptance criteria.
 
@@ -26,11 +27,27 @@ async def handle_record_test(
     # record weak/misclassified evidence.
     validate_covers(covers)
     normalized_layer = validate_evidence_layer(layer)
+    if not evidence_receipt:
+        return {
+            "recorded": False,
+            "blocked": True,
+            "status": "blocked_caller_evidence",
+            "reason": (
+                "bc_record_test accepts only a server-issued evidence receipt from "
+                "bc_run_tests or bc_api_contract; caller-supplied runtime claims are not proof."
+            ),
+            "next_action": {"tool": "bc_run_tests", "params_hint": {"spec_name": spec_name}},
+        }
     root = Path(project_root).resolve()
-    entry = verification.record_test(
-        root, spec_name, name=name, result=result, covers=covers,
-        layer=normalized_layer, evidence=evidence,
-    )
+    try:
+        entry = verification.record_test(
+            root, spec_name, name=name, result=result, covers=covers,
+            layer=normalized_layer, evidence=evidence,
+            evidence_receipt=evidence_receipt,
+        )
+    except ValueError as exc:
+        return {"recorded": False, "blocked": True, "status": "blocked_invalid_evidence_receipt",
+                "reason": str(exc)}
     return {"recorded": True, "test": entry}
 
 

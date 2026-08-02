@@ -11,6 +11,7 @@ from __future__ import annotations
 import argparse
 import asyncio
 import contextlib
+import hmac
 import os
 import shlex
 import time
@@ -18,6 +19,7 @@ import webbrowser
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict
+from urllib.parse import urlparse
 
 from starlette.applications import Starlette
 from starlette.middleware import Middleware
@@ -33,6 +35,8 @@ from bc_agentic_mcp.mission_control.bridge import McpBridge
 from bc_agentic_mcp.workspace import ENV_VAR as SPECS_ENV_VAR
 
 _STATIC = Path(__file__).parent / "static"
+ENV_MISSION_CONTROL_TOKEN = "BC_MISSION_CONTROL_TOKEN"
+ENV_ALLOW_REMOTE_DISPATCH = "BC_MISSION_CONTROL_ALLOW_REMOTE_DISPATCH"
 
 
 class _NoCacheMiddleware(BaseHTTPMiddleware):
@@ -44,8 +48,44 @@ class _NoCacheMiddleware(BaseHTTPMiddleware):
         return response
 
 
-def create_app(project_root: str, specs_root: str | None = None) -> Starlette:
+class _BearerAuthMiddleware(BaseHTTPMiddleware):
+    """Protect every API route when Mission Control is configured with a token."""
+
+    def __init__(self, app, token: str):
+        super().__init__(app)
+        self.token = token
+
+    async def dispatch(self, request: Request, call_next):
+        if not request.url.path.startswith("/api/"):
+            return await call_next(request)
+        supplied = request.headers.get("authorization", "")
+        expected = f"Bearer {self.token}"
+        if not hmac.compare_digest(supplied, expected):
+            return JSONResponse(
+                {"error": "Mission Control API authentication required"},
+                status_code=401,
+                headers={"WWW-Authenticate": "Bearer"},
+            )
+        if request.method not in {"GET", "HEAD", "OPTIONS"}:
+            origin = request.headers.get("origin")
+            origin_host = urlparse(origin).netloc if origin else ""
+            if origin and origin_host != request.headers.get("host", ""):
+                return JSONResponse({"error": "cross-origin action refused"}, status_code=403)
+        return await call_next(request)
+
+
+def create_app(
+    project_root: str,
+    specs_root: str | None = None,
+    auth_token: str | None = None,
+    remote_access: bool = False,
+) -> Starlette:
     root = Path(project_root).resolve()
+    token = (auth_token or os.environ.get(ENV_MISSION_CONTROL_TOKEN) or "").strip()
+    if remote_access and not token:
+        raise ValueError(
+            f"{ENV_MISSION_CONTROL_TOKEN} must be configured before binding Mission Control remotely"
+        )
     if specs_root:
         # Make the cockpit's own file projections resolve the SAME external
         # workspace base as the spawned MCP server (workspace.specs_root reads this).
@@ -80,6 +120,9 @@ def create_app(project_root: str, specs_root: str | None = None) -> Starlette:
 
     async def overview(_: Request) -> JSONResponse:
         return JSONResponse(views.overview(root))
+
+    async def atlas(_: Request) -> JSONResponse:
+        return JSONResponse(views.atlas(root))
 
     async def pulse(request: Request) -> JSONResponse:
         spec = _spec(request)
@@ -603,6 +646,12 @@ def create_app(project_root: str, specs_root: str | None = None) -> Starlette:
         )
 
     async def dispatch(request: Request) -> JSONResponse:
+        if remote_access and os.environ.get(ENV_ALLOW_REMOTE_DISPATCH) != "1":
+            return JSONResponse(
+                {"error": "agent dispatch is disabled for remotely exposed Mission Control",
+                 "hint": f"Set {ENV_ALLOW_REMOTE_DISPATCH}=1 only behind a trusted network boundary."},
+                status_code=403,
+            )
         spec = _spec(request)
         bad = _bad_spec(spec)
         if bad:
@@ -706,6 +755,8 @@ def create_app(project_root: str, specs_root: str | None = None) -> Starlette:
             Route("/", home),
             Route("/api/health", health),
             Route("/api/overview", overview),
+            Route("/api/atlas", atlas),
+
             Route("/api/item/{spec}/pulse", pulse),
             Route("/api/item/{spec}/artifact", artifact),
             Route("/api/item/{spec}/capture", capture, methods=["POST"]),
@@ -741,7 +792,10 @@ def create_app(project_root: str, specs_root: str | None = None) -> Starlette:
             Route("/api/env-preflight", env_preflight, methods=["POST"]),
             Mount("/static", StaticFiles(directory=str(_STATIC)), name="static"),
         ],
-        middleware=[Middleware(_NoCacheMiddleware)],
+        middleware=(
+            [Middleware(_NoCacheMiddleware)]
+            + ([Middleware(_BearerAuthMiddleware, token=token)] if token else [])
+        ),
         lifespan=lifespan,
     )
 
@@ -758,9 +812,19 @@ def main() -> None:
     parser.add_argument("--open", action="store_true", help="Open the cockpit in a browser")
     args = parser.parse_args()
 
-    app = create_app(args.project_root, args.specs_root)
+    host = args.host.strip().lower()
+    loopback = host in {"localhost", "::1"} or host.startswith("127.")
+    remote_access = not loopback
+    token = os.environ.get(ENV_MISSION_CONTROL_TOKEN, "").strip()
+    if remote_access and not token:
+        parser.error(
+            f"{ENV_MISSION_CONTROL_TOKEN} is required when --host is not loopback"
+        )
+    app = create_app(args.project_root, args.specs_root, auth_token=token, remote_access=remote_access)
     url = f"http://{args.host}:{args.port}"
     print(f"Mission Control -> {url}  (project: {args.project_root})")
+    if remote_access and os.environ.get(ENV_ALLOW_REMOTE_DISPATCH) != "1":
+        print("Remote Mission Control: agent dispatch is disabled by default.")
     if args.open:
         webbrowser.open(url)
     # h11 + ws="none": stick to uvicorn's guaranteed pure-Python protocols; the
@@ -771,3 +835,12 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
+
+
+
+
+
+
+
+
+

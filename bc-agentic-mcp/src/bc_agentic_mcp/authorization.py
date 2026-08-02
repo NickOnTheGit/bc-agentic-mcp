@@ -14,6 +14,7 @@ import re
 from pathlib import Path
 from typing import List, Optional, Tuple
 
+from bc_agentic_mcp import security
 from bc_agentic_mcp.workspace import external_base, specs_root
 
 # Phases whose approval authorizes writing implementation code.
@@ -21,15 +22,38 @@ from bc_agentic_mcp.workspace import external_base, specs_root
 GATING_PHASES = ("plan", "code", "tasks", "implement", "complete")
 
 _STATUS_RE = re.compile(r"(?im)^\*\*Status:\*\*\s*([A-Za-z_]+)")
+_TOKEN_RE = re.compile(r"(?im)^\*\*Approval token:\*\*\s*(\S+)")
 
 
 def read_decision(project_root: Path, spec_name: str, phase: str) -> Optional[str]:
-    """Return the recorded decision for a phase (``approve``/``reject``/…) or None."""
+    """Return a valid server-signed decision for a phase, or None."""
     path = specs_root(project_root) / spec_name / "approvals" / f"{phase}.md"
     if not path.exists():
         return None
-    match = _STATUS_RE.search(path.read_text(encoding="utf-8", errors="replace"))
-    return match.group(1).lower() if match else None
+    text = path.read_text(encoding="utf-8", errors="replace")
+    match = _STATUS_RE.search(text)
+    token_match = _TOKEN_RE.search(text)
+    if not match or not token_match:
+        return None
+    status = match.group(1).lower()
+    payload = security.verify_approval(
+        token_match.group(1),
+        project_root=Path(project_root),
+        spec_name=spec_name,
+        phase=phase,
+        status=status,
+    )
+    if payload is None:
+        return None
+    artifact_path = str(payload.get("artifact_path") or "")
+    if artifact_path:
+        artifact = Path(artifact_path)
+        try:
+            if not artifact.is_file() or security.file_digest(artifact) != payload.get("artifact_sha256"):
+                return None
+        except OSError:
+            return None
+    return status
 
 
 def implementation_authorized(project_root: Path, spec_name: str) -> bool:
@@ -59,7 +83,6 @@ def review_is_fresh(project_root: Path, spec_name: str) -> Tuple[bool, str]:
     quality_gate_path = specs_dir / "quality_gate.json"
     spec_path = specs_dir / "spec.json"
     design_path = specs_dir / "DESIGN.md"
-    tasks_path = specs_dir / "TASKS.md"
     tdd_path = specs_dir / "TDD.md"
 
     if not review_path.exists():

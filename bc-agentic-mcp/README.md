@@ -48,6 +48,12 @@ progress, answer clarifications, approve plan gates, advance deterministic
 steps, and review every artifact. Judgment steps (spec/design/code) stay with
 the `bc-orchestrator` agent — the cockpit hands you the exact prompt.
 
+Mission Control binds to loopback by default. Remote binding requires
+`BC_MISSION_CONTROL_TOKEN`; API requests must send a bearer token, and remote
+agent dispatch is disabled unless `BC_MISSION_CONTROL_ALLOW_REMOTE_DISPATCH=1`
+is explicitly enabled. Set `BC_MCP_SECURITY_SECRET` when signed approvals,
+runtime evidence, and knowledge-read receipts must survive server restarts.
+
 ## Agent files
 
 `agents/` contains the custom agent definitions to copy into a consuming

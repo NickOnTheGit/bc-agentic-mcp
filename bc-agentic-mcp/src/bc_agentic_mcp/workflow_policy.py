@@ -55,6 +55,10 @@ COMMON_TOOLS = {
     "bc_worktree",
     # Read-only reliability report over the audit log.
     "bc_tool_health",
+    # BCQuality knowledge article reader: needed in every role during review and
+    # implementation (reviewer reads articles for findings; implementer reads for
+    # code patterns). Read-only, no lifecycle phase advanced.
+    "bc_get_knowledge_article",
     "_health",
     "bc_health",
 }
@@ -315,3 +319,8 @@ def check_tool_call(
         }
 
     return True, {"stage": stage, "role": role}
+
+
+
+
+

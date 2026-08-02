@@ -155,3 +155,30 @@ def test_run_tool_does_not_rewrite_external_references():
             asyncio.run(exercise())
         finally:
             server_module._ctx = original_ctx
+
+
+def test_run_tool_consumes_rate_limit_tokens_and_blocks_live_calls():
+    with tempfile.TemporaryDirectory() as d:
+        root = Path(d)
+        original_ctx = server_module._ctx
+        server_module._ctx = ToolContext(
+            config=ServerConfig(project_root=root),
+            rate_limiter=RateLimiter(per_tool_rate=1, per_session_rate=100),
+            audit=AuditLogger(root / ".specs"),
+        )
+
+        async def exercise() -> None:
+            def handler() -> dict:
+                return {"ok": True}
+
+            first = await _run_tool("rate_limited_probe", handler)
+            second = await _run_tool("rate_limited_probe", handler)
+            assert first["ok"] is True
+            assert second["isError"] is True
+            assert second["_meta"]["error"] == "CLIENT_ERROR"
+            assert second["_meta"]["retry_after"] >= 1
+
+        try:
+            asyncio.run(exercise())
+        finally:
+            server_module._ctx = original_ctx

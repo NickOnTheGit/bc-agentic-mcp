@@ -3,7 +3,7 @@
 Born 2026-07-05 after three real wiring bugs shipped silently in one week:
 - bc_record_test broken for ALL callers (_run_tool positional name collision)
 - `confirm` not forwarded on three PR tools (dry-run gate unreachable)
-- tool-count pin found by accident (a test named 'sixteen' asserting 71)
+- tool-count drift between the live registry and policy surfaces
 
 These tests pin every wiring surface against the registered-tool ground truth:
 policy allowlists, stage maps, timeline phase map, recovery exclusions, and the

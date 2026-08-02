@@ -66,7 +66,7 @@ function savePresetsFromForm() {
   }
   localStorage.setItem("mc_presets", JSON.stringify(presets));
   // Server-side copy too — the routine scheduler and push-to-ADO run without a browser.
-  fetch("/api/presets", { method: "POST", headers: { "Content-Type": "application/json" },
+  api("/api/presets", { method: "POST", headers: { "Content-Type": "application/json" },
     body: JSON.stringify(presets) }).catch(() => {});
   toast("Presets saved — Advance, routines and ADO push use them automatically");
   $("presets-modal").hidden = true;
@@ -106,8 +106,19 @@ function maybeNotify(spec, phase, needsCount) {
 }
 
 /* ---------------- helpers ---------------- */
-async function api(path, opts) {
-  const res = await fetch(path, opts);
+async function api(path, opts = {}, retry = true) {
+  const request = { ...opts, headers: new Headers(opts.headers || {}) };
+  const token = sessionStorage.getItem("mc_api_token") || "";
+  if (token) request.headers.set("Authorization", `Bearer ${token}`);
+  let res = await fetch(path, request);
+  if (res.status === 401 && retry) {
+    sessionStorage.removeItem("mc_api_token");
+    const entered = window.prompt("Mission Control API token");
+    if (entered) {
+      sessionStorage.setItem("mc_api_token", entered.trim());
+      return api(path, opts, false);
+    }
+  }
   const body = await res.json().catch(() => ({}));
   if (!res.ok) {
     const err = new Error(body.error || res.statusText || "request failed");
@@ -1010,5 +1021,194 @@ $("viewer").addEventListener("click", (ev) => { if (ev.target === $("viewer")) $
 document.addEventListener("keydown", (ev) => { if (ev.key === "Escape") { $("viewer").hidden = true; $("presets-modal").hidden = true; $("routines-modal").hidden = true; } });
 
 paintNotifyBtn();
+initAtlasRuntime();
 refreshOverview();
 state.overviewTimer = setInterval(refreshOverview, POLL_OVERVIEW_MS);
+
+function showMissionView() {
+  state.viewMode = "mission";
+  const atlas = document.getElementById("atlas-sheet");
+  if (atlas) atlas.hidden = true;
+  $("mission-view").hidden = !state.selected;
+  $("empty-state").hidden = !!state.selected;
+}
+
+function showAtlasView() {
+  state.viewMode = "atlas";
+  const atlas = document.getElementById("atlas-sheet");
+  if (atlas) atlas.hidden = false;
+  $("mission-view").hidden = true;
+  $("empty-state").hidden = true;
+}
+
+/* ---------------- atlas runtime (dynamic) ---------------- */
+function atlasMatches(node) {
+  const q = (state.atlasQuery || "").trim().toLowerCase();
+  if (!q) return true;
+  const hay = [node.title, node.summary, node.kind, node.family, node.stage, node.phase, ...(node.roles || []), ...(node.tools || []), ...(node.files || [])]
+    .filter(Boolean).join(" ").toLowerCase();
+  return hay.includes(q);
+}
+
+function atlasNodeHtml(node, active) {
+  const chips = [];
+  if (node.stage) chips.push(`<span class="badge">${esc(node.stage)}</span>`);
+  if (node.family) chips.push(`<span class="badge">${esc(node.family)}</span>`);
+  if (node.phase) chips.push(`<span class="badge">${esc(node.phase)}</span>`);
+  if (node.roles) chips.push(...node.roles.map((r) => `<span class="badge">${esc(r)}</span>`));
+  if (node.tools && node.kind !== "tool") chips.push(`<span class="badge">${node.tools.length} tools</span>`);
+  return `<article class="atlas-node ${esc(node.kind)} ${active ? "active" : ""}" data-atlas-id="${esc(node.id)}"><div class="atlas-node-title"><span>${esc(node.title)}</span><span class="badge">${esc(node.kind)}</span></div><p>${esc(node.summary || "")}</p><div class="atlas-node-meta">${chips.join("")}</div></article>`;
+}
+
+function atlasDetailHtml(node, atlas) {
+  if (!node) return `<p class="muted">Select a node to inspect context and relationships.</p>`;
+  const linkedIds = (atlas.edges || []).filter((e) => e.from === node.id || e.to === node.id).map((e) => (e.from === node.id ? e.to : e.from));
+  const uniq = [];
+  for (const id of linkedIds) if (!uniq.includes(id)) uniq.push(id);
+  const links = uniq.map((id) => atlas._nodes[id]).filter(Boolean).slice(0, 24);
+  const linkChips = links.map((n) => `<span class="badge">${esc(n.title)}</span>`).join(" ");
+  const rows = [];
+  rows.push(`<div class="atlas-detail-row"><b>Type</b><span>${esc(node.kind || "")}</span></div>`);
+  if (node.family) rows.push(`<div class="atlas-detail-row"><b>Family</b><span>${esc(node.family)}</span></div>`);
+  if (node.stage) rows.push(`<div class="atlas-detail-row"><b>Stage</b><span>${esc(node.stage)}</span></div>`);
+  if (node.phase) rows.push(`<div class="atlas-detail-row"><b>Phase</b><span>${esc(node.phase)}</span></div>`);
+  if (node.files && node.files.length) rows.push(`<div class="atlas-detail-row"><b>Files</b><span>${node.files.map((f) => `<span class="badge">${esc(f)}</span>`).join(" ")}</span></div>`);
+  if (node.tools && node.tools.length) rows.push(`<div class="atlas-detail-row"><b>Tools</b><span>${node.tools.map((t) => `<span class="badge">${esc(t)}</span>`).join(" ")}</span></div>`);
+  rows.push(`<div class="atlas-detail-row"><b>Connected</b><span>${linkChips || "<span class='muted'>none</span>"}</span></div>`);
+  return `<div><span class="badge">${esc(node.kind)}</span> <b style="color:#fff;font-size:19px">${esc(node.title)}</b></div><p>${esc(node.summary || "")}</p>${rows.join("")}`;
+}
+
+async function refreshAtlas(force) {
+  if (state.viewMode !== "atlas" && !force) return;
+  const atlas = await api("/api/atlas");
+  state.atlasData = atlas;
+  const sectionMap = Object.fromEntries((atlas.sections || []).map((s) => [s.id, s]));
+  const layers = sectionMap.layers ? sectionMap.layers.nodes : [];
+  const gates = sectionMap.gates ? sectionMap.gates.nodes : [];
+  const tools = sectionMap.tools ? sectionMap.tools.nodes : [];
+  const phases = sectionMap.phases ? sectionMap.phases.nodes : [];
+  atlas._nodes = {};
+  for (const n of [...layers, ...gates, ...tools, ...phases]) atlas._nodes[n.id] = n;
+  if (state.atlasSelection && !atlas._nodes[state.atlasSelection.id]) state.atlasSelection = null;
+
+  $("atlas-stat-items").textContent = `${(atlas.live || {}).items_total || 0} missions`;
+  $("atlas-stat-tools").textContent = `${tools.length} tools`;
+  $("atlas-stat-gates").textContent = `${gates.length} gates`;
+  $("atlas-stat-approvals").textContent = `${(atlas.live || {}).pending_approvals || 0} pending approvals`;
+
+  $("atlas-track").innerHTML = phases.map((p) => `<span class="phase-chip ${state.atlasSelection && state.atlasSelection.id === p.id ? "active" : ""}" data-atlas-id="${esc(p.id)}">${esc(p.title)}</span>`).join("");
+
+  const selectedId = state.atlasSelection ? state.atlasSelection.id : "";
+  $("atlas-layers").innerHTML = layers.filter(atlasMatches).map((n) => atlasNodeHtml(n, selectedId === n.id)).join("") || `<p class="muted">No matching layers.</p>`;
+  $("atlas-gates").innerHTML = gates.filter(atlasMatches).map((n) => atlasNodeHtml(n, selectedId === n.id)).join("") || `<p class="muted">No matching gates.</p>`;
+  $("atlas-tools").innerHTML = tools.filter(atlasMatches).map((n) => atlasNodeHtml(n, selectedId === n.id)).join("") || `<p class="muted">No matching tools.</p>`;
+
+  const selectedNode = selectedId ? atlas._nodes[selectedId] : null;
+  $("atlas-detail-title").textContent = selectedNode ? selectedNode.title : "Atlas detail";
+  $("atlas-detail-body").innerHTML = atlasDetailHtml(selectedNode, atlas);
+
+  for (const root of [$("atlas-track"), $("atlas-layers"), $("atlas-gates"), $("atlas-tools")]) {
+    root.querySelectorAll("[data-atlas-id]").forEach((el) => {
+      el.onclick = () => {
+        const id = el.getAttribute("data-atlas-id");
+        state.atlasSelection = atlas._nodes[id] || null;
+        refreshAtlas(true).catch((e) => toast(e.message, true));
+      };
+    });
+  }
+}
+
+function initAtlasRuntime() {
+  const top = document.querySelector(".top-status");
+  if (!top || document.getElementById("btn-atlas")) return;
+
+  const btn = document.createElement("button");
+  btn.className = "btn ghost";
+  btn.id = "btn-atlas";
+  btn.title = "Open BC MCP Atlas";
+  btn.textContent = "🗺";
+  top.insertBefore(btn, document.getElementById("btn-routines"));
+
+  const style = document.createElement("style");
+  style.textContent = `
+    #atlas-sheet[hidden]{display:none}
+    #atlas-sheet{margin-top:8px;animation:atlasFade .28s ease}
+    @keyframes atlasFade{from{opacity:0;transform:translateY(6px)}to{opacity:1;transform:translateY(0)}}
+    .atlas-shell{background:linear-gradient(180deg, rgba(255,255,255,.10), rgba(255,255,255,.05));border:1px solid rgba(255,255,255,.22);border-radius:18px;padding:16px}
+    .atlas-head{display:flex;justify-content:space-between;align-items:flex-start;gap:12px}
+    .atlas-head h1{margin:0;font-size:28px;color:#fff;letter-spacing:-.6px}
+    .atlas-head p{margin:6px 0 0;max-width:740px}
+    .atlas-actions{display:flex;gap:8px;flex-wrap:wrap;justify-content:flex-end}
+    .atlas-actions input{min-width:min(330px,64vw);margin-top:0}
+    .atlas-stats{display:flex;gap:8px;flex-wrap:wrap;margin:12px 0 10px}
+    .atlas-track{display:flex;gap:8px;flex-wrap:wrap;margin-bottom:14px;padding:10px;border-radius:12px;border:1px solid var(--line);background:rgba(7,11,92,.33)}
+    .phase-chip{font-size:11px;padding:5px 10px;border-radius:999px;border:1px solid var(--line);color:var(--muted);cursor:pointer;transition:all .15s}
+    .phase-chip:hover,.phase-chip.active{border-color:#fff;color:#fff;box-shadow:0 0 12px rgba(255,255,255,.22)}
+    .atlas-grid{display:grid;grid-template-columns:240px 240px 1fr 320px;gap:14px;align-items:start}
+    .atlas-column h2,.atlas-detail h2{margin:0 0 10px;font-size:11px;letter-spacing:2px;text-transform:uppercase;color:var(--muted)}
+    .atlas-nodes{display:flex;flex-direction:column;gap:10px}
+    .atlas-tools{max-height:66vh;overflow-y:auto;padding-right:4px}
+    .atlas-node{border-radius:12px;border:1px solid var(--line);background:rgba(255,255,255,.06);padding:10px 11px;cursor:pointer;transition:all .15s}
+    .atlas-node:hover,.atlas-node.active{border-color:#fff;background:rgba(255,255,255,.12);box-shadow:0 0 12px rgba(255,255,255,.18)}
+    .atlas-node.layer{border-left:4px solid var(--accent-2)}
+    .atlas-node.gate{border-left:4px solid var(--warn)}
+    .atlas-node.tool{border-left:4px solid var(--ok)}
+    .atlas-node-title{display:flex;justify-content:space-between;align-items:center;gap:6px;color:#fff;font-weight:700}
+    .atlas-node p{margin:6px 0 0;font-size:12px;color:var(--muted);line-height:1.4}
+    .atlas-node-meta{margin-top:6px;display:flex;gap:5px;flex-wrap:wrap}
+    .atlas-detail{min-height:520px;position:sticky;top:62px}
+    .atlas-detail-row{display:grid;grid-template-columns:92px 1fr;gap:8px;font-size:12px;margin-top:8px}
+    .atlas-detail-row b{color:var(--accent-2)}
+    @media (max-width:1450px){.atlas-grid{grid-template-columns:220px 220px 1fr}.atlas-detail{grid-column:1 / -1;min-height:auto;position:static}}
+    @media (max-width:1100px){.atlas-grid{grid-template-columns:1fr}}
+  `;
+  document.head.appendChild(style);
+
+  const main = document.getElementById("main");
+  const sheet = document.createElement("div");
+  sheet.id = "atlas-sheet";
+  sheet.hidden = true;
+  sheet.innerHTML = `
+    <div class="atlas-shell">
+      <div class="atlas-head">
+        <div>
+          <h1>BC MCP Atlas</h1>
+          <p class="muted">Interactive architecture and lifecycle map. Click any node for transitions, roles, and gate context.</p>
+        </div>
+        <div class="atlas-actions">
+          <input id="atlas-search" type="text" placeholder="Search tool, gate, layer, phase">
+          <button class="btn" id="atlas-refresh">↻ Refresh</button>
+          <button class="btn primary" id="atlas-return">Return to mission</button>
+        </div>
+      </div>
+      <div class="atlas-stats">
+        <span class="badge" id="atlas-stat-items">0 missions</span>
+        <span class="badge" id="atlas-stat-tools">0 tools</span>
+        <span class="badge" id="atlas-stat-gates">0 gates</span>
+        <span class="badge" id="atlas-stat-approvals">0 pending approvals</span>
+      </div>
+      <div id="atlas-track" class="atlas-track"></div>
+      <div class="atlas-grid">
+        <section class="atlas-column"><h2>Layers</h2><div id="atlas-layers" class="atlas-nodes"></div></section>
+        <section class="atlas-column"><h2>Gates</h2><div id="atlas-gates" class="atlas-nodes"></div></section>
+        <section class="atlas-column atlas-wide"><h2>Tools</h2><div id="atlas-tools" class="atlas-nodes atlas-tools"></div></section>
+        <aside class="panel atlas-detail"><h2 id="atlas-detail-title">Atlas detail</h2><div id="atlas-detail-body" class="muted">Select a node to inspect context and relationships.</div></aside>
+      </div>
+    </div>
+  `;
+  main.insertBefore(sheet, document.getElementById("mission-view"));
+
+  btn.onclick = async () => {
+    showAtlasView();
+    try { await refreshAtlas(true); } catch (e) { toast(e.message, true); }
+  };
+  document.getElementById("atlas-return").onclick = showMissionView;
+  document.getElementById("atlas-refresh").onclick = () => refreshAtlas(true).catch((e) => toast(e.message, true));
+  document.getElementById("atlas-search").addEventListener("input", (e) => {
+    state.atlasQuery = e.target.value || "";
+    refreshAtlas(true).catch((err) => toast(err.message, true));
+  });
+}
+
+
+

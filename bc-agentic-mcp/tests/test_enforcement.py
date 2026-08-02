@@ -23,6 +23,7 @@ def _charter(root, spec="s"):
     ctx = root / ".specs" / spec / "context" / "code"
     ctx.mkdir(parents=True, exist_ok=True)
     (ctx / "code_context.json").write_text("{}", encoding="utf-8")
+    (root / ".specs" / spec / "REVIEW.md").write_text("# REVIEW\npacket\n", encoding="utf-8")
 
 
 def _record_regression(root, spec="s"):

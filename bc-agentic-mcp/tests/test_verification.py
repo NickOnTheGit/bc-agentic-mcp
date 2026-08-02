@@ -2,7 +2,7 @@
 import pytest
 
 from bc_agentic_mcp import checkpoints as memory
-from bc_agentic_mcp import verification
+from bc_agentic_mcp import security, verification
 from bc_agentic_mcp.tools.verify import handle_verify, handle_record_test
 
 
@@ -111,7 +111,21 @@ def test_verification_covers_all_marks_every_criterion(tmp_path):
 @pytest.mark.asyncio
 async def test_verify_tool_writes_report_and_returns_digest(tmp_path):
     _charter(tmp_path)
-    await handle_record_test(project_root=str(tmp_path), spec_name="wi-x", name="unit tests", result="pass", covers="all")
+    evidence = "server-issued unit run passed=1/1 exit=0"
+    receipt = security.issue_evidence(
+        project_root=tmp_path,
+        spec_name="wi-x",
+        producer="bc_run_tests",
+        name="unit tests",
+        result="pass",
+        covers="all",
+        layer="al-unit",
+        evidence=evidence,
+    )
+    await handle_record_test(
+        project_root=str(tmp_path), spec_name="wi-x", name="unit tests", result="pass",
+        covers="all", layer="al-unit", evidence=evidence, evidence_receipt=receipt,
+    )
     digest = await handle_verify(project_root=str(tmp_path), spec_name="wi-x")
     assert digest["fully_validated"] is True
     from pathlib import Path

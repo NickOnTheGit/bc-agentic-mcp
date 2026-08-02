@@ -6,14 +6,26 @@ from pathlib import Path
 
 import pytest
 
-from bc_agentic_mcp import authorization, gate, detectors, review, timeline
+from bc_agentic_mcp import authorization, gate, detectors, review, security, timeline
 from bc_agentic_mcp import checkpoints as memory
 
 
 def _approve(root: Path, spec: str = "s1", phase: str = "tasks") -> None:
     d = root / ".specs" / spec / "approvals"
     d.mkdir(parents=True, exist_ok=True)
-    (d / f"{phase}.md").write_text("**Status:** approve\n", encoding="utf-8")
+    token = security.issue_approval(
+        project_root=root,
+        spec_name=spec,
+        phase=phase,
+        status="approve",
+        artifact_path="",
+        artifact_sha256="",
+        summary="test approval",
+        idempotency_key=f"test-{spec}-{phase}",
+    )
+    (d / f"{phase}.md").write_text(
+        f"**Status:** approve\n**Approval token:** {token}\n", encoding="utf-8"
+    )
 
 
 def _green_engines(root: Path, spec: str = "s1") -> None:
@@ -505,7 +517,8 @@ def test_review_packet_has_checklist_and_charter(tmp_path):
     _charter(tmp_path, operations={"read": True, "update": True})
     packet = review.build_review_packet(tmp_path, "s1", changed_files=["a.al"])
     assert packet["checklist"]
-    assert any(item["id"] == "upgrade_scope" for item in packet["checklist"])
+    # upgrade_scope moved to BCQuality corpus; checklist retains MCP-specific gates
+    assert any(item["id"] == "scope_creep" for item in packet["checklist"])
     assert packet["charter"]["operations"] == {"read": True, "update": True}
 
 
@@ -525,3 +538,4 @@ def test_review_returns_packet_when_no_findings(tmp_path):
     _charter(tmp_path)
     out = review.handle_review(str(tmp_path), "s1")
     assert "checklist" in out
+

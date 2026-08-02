@@ -15,7 +15,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Union
 
-from bc_agentic_mcp import al_runner, env_preflight, verification
+from bc_agentic_mcp import al_runner, env_preflight, security, verification
 from bc_agentic_mcp.validation import validate_covers, validate_validation_mode
 from bc_agentic_mcp.workspace import specs_root
 
@@ -188,6 +188,16 @@ async def handle_run_tests(
             f"exit={result.get('exit_code')} mode={mode} "
             f"paths=happy:{shape['happy']},negative:{shape['negative']},edge:{shape['edge']}"
         )
+        evidence_receipt = security.issue_evidence(
+            project_root=Path(project_root).resolve(),
+            spec_name=spec_name,
+            producer="bc_run_tests",
+            name=f"AL run {result.get('passed')}/{result.get('total')} ({container_name})",
+            result="pass" if result.get("all_passed") else "fail",
+            covers=covers,
+            layer=layer,
+            evidence=evidence,
+        )
         # EXPLICIT per-test visibility (PBI-template shape): the caller — and the
         # human — must see WHICH tests ran and WHAT shape each one proves, not a
         # bare pass count. Also persisted as TEST-REPORT.md in the spec folder.
@@ -212,8 +222,10 @@ async def handle_run_tests(
             evidence=evidence,
             executed_tests=executed_tests,
             failures=result.get("failures") or None,
+            evidence_receipt=evidence_receipt,
         )
         result["evidence_recorded"] = True
+        result["evidence_receipt"] = evidence_receipt
         result["validation_mode"] = mode
         try:
             result["test_report_path"] = _write_test_report(

@@ -3,6 +3,7 @@ import tempfile
 from pathlib import Path
 import json
 import pytest
+from bc_agentic_mcp import security
 from bc_agentic_mcp.tools.implement import (
     handle_implement,
     _load_implementer_prompt,
@@ -169,7 +170,14 @@ class TestPhase2CodeExecution:
     def _approve(root, spec="test-spec", phase="tasks"):
         d = Path(root) / ".specs" / spec / "approvals"
         d.mkdir(parents=True, exist_ok=True)
-        (d / f"{phase}.md").write_text("**Status:** approve\n", encoding="utf-8")
+        token = security.issue_approval(
+            project_root=Path(root), spec_name=spec, phase=phase, status="approve",
+            artifact_path="", artifact_sha256="", summary="test approval",
+            idempotency_key=f"test-{spec}-{phase}",
+        )
+        (d / f"{phase}.md").write_text(
+            f"**Status:** approve\n**Approval token:** {token}\n", encoding="utf-8"
+        )
 
     @pytest.mark.asyncio
     async def test_phase2_with_valid_code_writes_file(self, spec_project_with_al):

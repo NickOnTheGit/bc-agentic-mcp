@@ -35,6 +35,12 @@ class TokenBucket:
                 return True
             return False
 
+    def refund(self) -> None:
+        """Return one token after a compound limiter check fails."""
+        with self.lock:
+            self._refill()
+            self._tokens = min(self.capacity, self._tokens + 1)
+
     @property
     def wait_seconds(self) -> float:
         """Estimated seconds until next token available."""
@@ -69,10 +75,26 @@ class RateLimiter:
             return self.tool_buckets[tool_name]
 
     def is_allowed(self, tool_name: str) -> bool:
-        """Check if a tool call is allowed. Returns False if rate limited."""
+        """Consume both buckets and return whether a tool call is allowed."""
+        allowed, _retry_after = self.consume(tool_name)
+        return allowed
+
+    def consume(self, tool_name: str) -> Tuple[bool, float]:
+        """Consume both buckets and return ``(allowed, retry_after_seconds)``."""
         if not self.session_bucket.consume():
-            return False
-        return self._get_tool_bucket(tool_name).consume()
+            return False, max(
+                self.session_bucket.wait_seconds,
+                self._get_tool_bucket(tool_name).wait_seconds,
+            )
+        tool_bucket = self._get_tool_bucket(tool_name)
+        if not tool_bucket.consume():
+            # A failed per-tool check must not burn the session budget.
+            self.session_bucket.refund()
+            return False, max(
+                self.session_bucket.wait_seconds,
+                tool_bucket.wait_seconds,
+            )
+        return True, 0.0
 
     def check(self, tool_name: str) -> Tuple[bool, float]:
         """Check (non-consuming) if a call would be blocked.

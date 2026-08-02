@@ -8,10 +8,20 @@ from bc_agentic_mcp import knowledge, review
 from bc_agentic_mcp import checkpoints as memory
 
 
+@pytest.fixture
+def _use_real_vendor():
+    """Opt-in marker: test needs the real bundled BCQuality vendor snapshot."""
+
+
 @pytest.fixture(autouse=True)
-def _hermetic_env(monkeypatch):
+def _hermetic_env(monkeypatch, request):
     monkeypatch.delenv("BC_AGENTIC_SPECS_ROOT", raising=False)
     monkeypatch.delenv(knowledge.ENV_VENDOR_ROOT, raising=False)
+    # Isolate corpus from the bundled BCQuality vendor snapshot so tests that
+    # build tiny corpora get deterministic article counts.
+    # Tests that need the real bundled vendor request the _use_real_vendor fixture.
+    if "_use_real_vendor" not in request.fixturenames:
+        monkeypatch.setattr(knowledge, "_bundled_vendor_root", lambda: None)
 
 
 ARTICLE = """---
@@ -209,14 +219,14 @@ def test_review_packet_carries_knowledge_worklist(tmp_path):
     packet = review.build_review_packet(tmp_path, "s1", changed_files=["UpgradeShared.Codeunit.al"])
     assert packet["knowledge"]
     assert packet["knowledge"][0]["path"] == "upgrade/datapercompany.md"
-    assert "IN FULL" in packet["instructions"]
+    assert "bc_get_knowledge_article" in packet["instructions"]
 
 
 def test_review_packet_knowledge_empty_without_corpus(tmp_path):
     memory.write_charter(tmp_path, "s1", purpose="test", operations={})
     packet = review.build_review_packet(tmp_path, "s1", changed_files=["a.al"])
     assert packet["knowledge"] == []
-    assert "IN FULL" not in packet["instructions"]
+    assert "bc_get_knowledge_article" not in packet["instructions"]
 
 
 # --- policy (committed .specs/policy/knowledge.json) --------------------------
@@ -308,6 +318,129 @@ def test_policy_change_invalidates_cache(tmp_path):
     _write_policy(tmp_path, deny=["repo/appsource/**"])  # no article file touched
     rebuilt = knowledge.load_knowledge_index(tmp_path)
     assert rebuilt["articleCount"] == 1
+
+
+# --- bundled vendor root (Plan B gap 3 verification) --------------------------
+
+def test_bundled_vendor_root_present(_use_real_vendor):
+    """The package-data BCQuality snapshot must be present after vendor population."""
+    root = knowledge._bundled_vendor_root()
+    assert root is not None, "_bundled_vendor_root() returned None — vendor not populated"
+    assert root.is_dir(), f"Bundled vendor dir does not exist: {root}"
+    manifest = root / knowledge.MANIFEST_FILENAME
+    assert manifest.exists(), "MANIFEST.json missing from bundled vendor"
+    data = json.loads(manifest.read_text(encoding="utf-8"))
+    assert data.get("article_count", 0) > 0
+
+
+def test_vendor_root_falls_back_to_bundled(tmp_path, _use_real_vendor):
+    """vendor_root() must return the bundled path when no env/policy override is set."""
+    vroot = knowledge.vendor_root(tmp_path)
+    bundled = knowledge._bundled_vendor_root()
+    assert vroot is not None
+    assert vroot == bundled
+
+
+def test_vendor_commit_reads_manifest_for_bundled(_use_real_vendor):
+    """_vendor_commit() must read MANIFEST.json when vendor has no .git directory."""
+    bundled = knowledge._bundled_vendor_root()
+    if bundled is None:
+        pytest.skip("bundled vendor not populated")
+    commit = knowledge._vendor_commit(bundled)
+    assert commit, "_vendor_commit returned empty for bundled vendor"
+    assert len(commit) == 40, f"Expected 40-char SHA, got: {commit!r}"
+
+
+# --- companions (golden templates) -------------------------------------------
+
+def test_parse_article_includes_companions(tmp_path):
+    path = _write_article(tmp_path, rel="perf/setloadfields.md")
+    # Write companion AL files alongside the article
+    good_al = path.parent / "setloadfields.good.al"
+    bad_al = path.parent / "setloadfields.bad.al"
+    good_al.write_text("// good pattern\n", encoding="utf-8")
+    bad_al.write_text("// bad pattern\n", encoding="utf-8")
+    parsed = knowledge.parse_article(path)
+    assert parsed is not None
+    companions = parsed.get("companions", [])
+    kinds = {c["kind"] for c in companions}
+    assert kinds == {"good", "bad"}
+
+
+def test_build_index_propagates_companions(tmp_path):
+    path = _write_article(tmp_path, rel="perf/setloadfields.md")
+    (path.parent / "setloadfields.good.al").write_text("// good\n", encoding="utf-8")
+    index = knowledge.build_knowledge_index(tmp_path)
+    art = index["articles"][0]
+    assert len(art.get("companions", [])) == 1
+    assert art["companions"][0]["kind"] == "good"
+
+
+def test_select_articles_includes_companions(tmp_path):
+    path = _write_article(tmp_path, rel="upgrade/datapercompany.md")
+    (path.parent / "datapercompany.good.al").write_text("// good\n", encoding="utf-8")
+    hits = knowledge.select_articles(tmp_path, "upgrade DataPerCompany shared table")
+    assert hits
+    assert any(c["kind"] == "good" for c in hits[0].get("companions", []))
+
+
+# --- check_vendor_health -------------------------------------------------------
+
+def test_check_vendor_health_ok_when_bundled_present(_use_real_vendor):
+    health = knowledge.check_vendor_health()
+    bundled = knowledge._bundled_vendor_root()
+    if bundled is None:
+        pytest.skip("bundled vendor not populated")
+    assert health["ok"] is True
+    assert health["bundled"] is True
+    assert health["present"] is True
+    assert health["errors"] == []
+
+
+def test_check_vendor_health_error_when_root_missing(tmp_path, monkeypatch):
+    monkeypatch.setenv(knowledge.ENV_VENDOR_ROOT, str(tmp_path / "nonexistent"))
+    health = knowledge.check_vendor_health(tmp_path)
+    assert health["ok"] is False
+    assert health["present"] is False
+    assert health["errors"]
+
+
+def test_check_vendor_health_drift(tmp_path, monkeypatch):
+    clone = tmp_path / "clone"
+    (clone / "microsoft" / "knowledge" / "x").mkdir(parents=True)
+    _write_article(tmp_path, rel="x/a.md")  # repo layer
+    _write_policy(tmp_path, vendor={"root": str(clone), "pinned_commit": "def456abc" * 4})
+    monkeypatch.setattr(knowledge, "_vendor_commit", lambda root: "abc123def" * 4)
+    health = knowledge.check_vendor_health(tmp_path)
+    assert health["drift"] is True
+    assert health["ok"] is False
+    assert health["errors"]
+
+
+# --- review packet: packet_article_count + vendor_health ----------------------
+
+def test_review_packet_has_article_count_and_vendor_health(tmp_path):
+    _write_article(tmp_path)
+    memory.write_charter(tmp_path, "s1", purpose="upgrade DataPerCompany shared table",
+                         operations={"update": True})
+    packet = review.build_review_packet(tmp_path, "s1", changed_files=["Upgrade.al"])
+    assert "packet_article_count" in packet
+    assert "vendor_health" in packet
+    assert isinstance(packet["packet_article_count"], int)
+
+
+def test_review_packet_meta_written_to_disk(tmp_path):
+    _write_article(tmp_path)
+    memory.write_charter(tmp_path, "s1", purpose="upgrade DataPerCompany shared table",
+                         operations={"update": True})
+    review.build_review_packet(tmp_path, "s1", changed_files=["Upgrade.al"])
+    from bc_agentic_mcp.workspace import specs_root as _sr
+    meta = _sr(tmp_path) / "s1" / "review_packet_meta.json"
+    assert meta.exists()
+    data = json.loads(meta.read_text(encoding="utf-8"))
+    assert "packet_article_count" in data
+    assert "vendor_health" in data
+
 
 
 def test_relevance_floor_drops_weak_matches(tmp_path):

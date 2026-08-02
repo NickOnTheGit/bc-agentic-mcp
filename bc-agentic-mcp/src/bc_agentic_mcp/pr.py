@@ -27,6 +27,7 @@ from urllib import error as _urlerror
 from urllib import request as _urlrequest
 
 from bc_agentic_mcp.workspace import specs_root
+from bc_agentic_mcp import security
 
 DEFAULT_PAT_ENV = "AZURE_DEVOPS_EXT_PAT"
 API_VERSION = "7.0"
@@ -428,16 +429,29 @@ def record_code_gate_from_pr(
         return None
     approvals = specs_root(Path(project_root).resolve()) / spec_name / "approvals"
     path = approvals / "code.md"
-    if path.exists() and "**Status:** approve" in path.read_text(encoding="utf-8", errors="replace"):
-        return str(path)
+    if path.exists():
+        from bc_agentic_mcp.authorization import read_decision
+        if read_decision(Path(project_root), spec_name, "code") == "approve":
+            return str(path)
     approvals.mkdir(parents=True, exist_ok=True)
     reviewers = ", ".join(
         f"{r['name']} ({r['vote']})" for r in verdict.get("reviewers", []) if r.get("name")
     ) or "unknown"
+    approval_token = security.issue_approval(
+        project_root=Path(project_root).resolve(),
+        spec_name=spec_name,
+        phase="code",
+        status="approve",
+        artifact_path="",
+        artifact_sha256="",
+        summary=f"ADO PR {pr_record.get('pr_id')} approved by {reviewers}",
+        idempotency_key=f"ado-pr:{pr_record.get('pr_id')}:{spec_name}",
+    )
     path.write_text(
         f"""# Approval: {spec_name} — Code Gate (satisfied by ADO PR review)
 
 **Status:** approve
+**Approval token:** {approval_token}
 **Recorded:** {datetime.now(timezone.utc).isoformat()}
 **Source:** azure-devops-pr
 **PR:** {pr_record.get('pr_id')} ({pr_record.get('url', 'n/a')})

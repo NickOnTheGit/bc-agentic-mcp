@@ -14,6 +14,99 @@ import re
 from typing import Any, Dict, List, Optional, Union
 
 from bc_agentic_mcp import checkpoints as memory
+from bc_agentic_mcp import security
+
+
+def check_knowledge_coverage(project_root: Path, spec_name: str) -> Dict[str, Any]:
+    """Check whether BCQuality articles were applied during the review phase.
+
+    ``required`` is True only when the review packet contained ≥1 article
+    (packet_article_count > 0, persisted to review_packet_meta.json).
+    ``ok`` requires a knowledge_trace.json with ≥1 article applied.
+    """
+    from bc_agentic_mcp.workspace import specs_root as _sr
+    spec_dir = _sr(Path(project_root)) / spec_name
+
+    # Read packet metadata to know exactly which articles were in the review packet.
+    packet_article_count = 0
+    packet_article_paths: List[str] = []
+    packet_id = ""
+    vendor_commit = ""
+    metadata_error = ""
+    meta_path = spec_dir / "review_packet_meta.json"
+    if meta_path.exists():
+        try:
+            meta = json.loads(meta_path.read_text(encoding="utf-8"))
+            if not isinstance(meta, dict):
+                raise ValueError("metadata is not an object")
+            packet_article_count = int(meta.get("packet_article_count") or 0)
+            packet_article_paths = [str(p) for p in meta.get("packet_article_paths") or []]
+            packet_id = str(meta.get("packet_id") or "")
+            vendor_commit = str((meta.get("vendor_health") or {}).get("commit") or "")
+            if meta.get("knowledge_error"):
+                metadata_error = "knowledge retrieval failed while building the review packet"
+        except (OSError, json.JSONDecodeError, ValueError) as exc:
+            metadata_error = f"review packet metadata unreadable: {exc}"
+
+    required = packet_article_count > 0 or bool(packet_article_paths) or bool(metadata_error)
+    if metadata_error:
+        return {
+            "required": True,
+            "ok": False,
+            "reason": metadata_error,
+            "packet_article_count": packet_article_count,
+            "packet_article_paths": packet_article_paths,
+            "articles_applied": [],
+        }
+
+    # Read the signed trace to know if the current packet's articles were actually read.
+    trace_path = spec_dir / "knowledge_trace.json"
+    applied: List[str] = []
+    receipts: List[str] = []
+    trace_error = ""
+    if trace_path.exists():
+        try:
+            trace = json.loads(trace_path.read_text(encoding="utf-8"))
+            if not isinstance(trace, dict):
+                raise ValueError("trace is not an object")
+            applied = [str(p) for p in trace.get("articles_applied") or []]
+            receipts = [str(r) for r in trace.get("knowledge_receipts") or []]
+            if packet_id and trace.get("packet_id") != packet_id:
+                trace_error = "knowledge trace belongs to a different review packet"
+            elif set(applied) != set(packet_article_paths):
+                trace_error = "knowledge trace does not cover exactly the current packet articles"
+        except (OSError, json.JSONDecodeError, ValueError) as exc:
+            trace_error = f"knowledge trace unreadable: {exc}"
+
+    receipt_validation = {"ok": True}
+    if required and not trace_error:
+        from bc_agentic_mcp import knowledge
+        receipt_validation = knowledge.validate_knowledge_receipts(
+            Path(project_root),
+            spec_name,
+            packet_id,
+            packet_article_paths,
+            vendor_commit,
+            receipts,
+        )
+    ok = (not required) or (not trace_error and bool(applied) and receipt_validation.get("ok", False))
+    reason = ""
+    if required and not ok:
+        detail = trace_error or str(receipt_validation.get("reason") or "") or (
+            "Call bc_get_knowledge_article for each article with the current packet_id."
+        )
+        reason = (
+            f"BCQuality knowledge coverage missing — review packet had "
+            f"{packet_article_count} article(s). {detail}"
+        )
+    return {
+        "required": required,
+        "ok": ok,
+        "reason": reason,
+        "packet_article_count": packet_article_count,
+        "packet_article_paths": packet_article_paths,
+        "articles_applied": applied,
+    }
 
 _PASS_TOKENS = {"pass", "passed", "true", "ok", "success"}
 # Evidence-location tokens that mean "ran in a local BC container". The container
@@ -344,6 +437,8 @@ def record_test(
     evidence: str = "",
     executed_tests: Optional[List[Dict[str, Any]]] = None,
     failures: Optional[List[Dict[str, Any]]] = None,
+    evidence_receipt: str = "",
+    trusted_source: str = "internal",
 ) -> Dict[str, Any]:
     """Record a test result as durable evidence.
 
@@ -354,12 +449,28 @@ def record_test(
     and the PR template cannot name what each test validates (observed live: the
     golden template said '8/8' while the reviewer had to open the test file).
     """
+    if evidence_receipt:
+        if not security.verify_evidence(
+            evidence_receipt,
+            project_root=Path(project_root),
+            spec_name=spec_name,
+            name=name,
+            result=result,
+            covers=covers,
+            layer=layer,
+            evidence=evidence,
+        ):
+            raise ValueError("runtime evidence receipt is invalid or does not match the result")
+        trusted_source = "server"
     details: Dict[str, Any] = {
         "result": str(result),
         "covers": covers,
         "layer": layer,
         "evidence": evidence,
+        "evidence_source": trusted_source,
     }
+    if evidence_receipt:
+        details["evidence_receipt"] = evidence_receipt
     if executed_tests:
         details["executed_tests"] = executed_tests
     if failures:
@@ -391,6 +502,26 @@ def _covers(detail_covers: Any, index: int) -> bool:
     return False
 
 
+def _trusted_test_record(project_root: Path, spec_name: str, checkpoint: Dict[str, Any]) -> bool:
+    """Accept only internal records or receipts issued by an execution tool."""
+    details = checkpoint.get("details") or {}
+    source = str(details.get("evidence_source") or "")
+    if source == "internal":
+        return True
+    if source != "server":
+        return False
+    return bool(security.verify_evidence(
+        str(details.get("evidence_receipt") or ""),
+        project_root=Path(project_root),
+        spec_name=spec_name,
+        name=str(checkpoint.get("summary") or ""),
+        result=str(details.get("result") or ""),
+        covers=details.get("covers"),
+        layer=str(details.get("layer") or ""),
+        evidence=str(details.get("evidence") or ""),
+    ))
+
+
 def build_verification(
     project_root: Path,
     spec_name: str,
@@ -405,7 +536,10 @@ def build_verification(
     charter = memory.load_charter(project_root, spec_name)
     criteria = list((charter or {}).get("acceptance_criteria", []))
     operations = (charter or {}).get("operations", {})
-    tests = [c for c in memory.load_checkpoints(project_root, spec_name) if c.get("kind") == "test"]
+    tests = [
+        c for c in memory.load_checkpoints(project_root, spec_name)
+        if c.get("kind") == "test" and _trusted_test_record(project_root, spec_name, c)
+    ]
     spec_json: Optional[Dict[str, Any]] = None
     try:
         from bc_agentic_mcp.workspace import specs_root as _sr
@@ -439,8 +573,8 @@ def build_verification(
         passing = [t for t in covering if _is_pass((t.get("details") or {}).get("result"))]
         strengths = [
             evidence_strength(
-                (t.get("details") or {}).get("layer"),
-                (t.get("details") or {}).get("evidence"),
+                str((t.get("details") or {}).get("layer") or ""),
+                str((t.get("details") or {}).get("evidence") or ""),
             )
             for t in passing
         ]
@@ -658,6 +792,16 @@ def validation_class_status(
     }
     if api_touch:
         classes["api-contract"]["touching_api_pages"] = api_touch[:10]
+    # KNOWLEDGE-COVERAGE: BCQuality articles in the review packet must be applied.
+    # Required only when packet_article_count > 0 (fail-safe-open when no review packet).
+    kc = check_knowledge_coverage(project_root, spec_name)
+    classes["knowledge-coverage"] = {
+        "required": kc["required"],
+        "ok": kc["ok"],
+        "reason": kc["reason"],
+        "packet_article_count": kc["packet_article_count"],
+        "articles_applied": kc["articles_applied"][:5],
+    }
     return classes
 
 
@@ -770,7 +914,10 @@ def local_container_evidence(project_root: Path, spec_name: str) -> Dict[str, An
 
     This is a deterministic metadata check on recorded ``kind='test'`` checkpoints.
     """
-    tests = [c for c in memory.load_checkpoints(project_root, spec_name) if c.get("kind") == "test"]
+    tests = [
+        c for c in memory.load_checkpoints(project_root, spec_name)
+        if c.get("kind") == "test" and _trusted_test_record(project_root, spec_name, c)
+    ]
     matches: List[str] = []
     missing_full_refs: List[str] = []
     invalid_local_paths: List[str] = []

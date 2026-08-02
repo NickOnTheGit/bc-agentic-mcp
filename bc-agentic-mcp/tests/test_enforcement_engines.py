@@ -5,7 +5,7 @@ from pathlib import Path
 
 import pytest
 
-from bc_agentic_mcp import enforcement, gate, timeline
+from bc_agentic_mcp import enforcement, gate, security, timeline
 
 
 @pytest.fixture(autouse=True)
@@ -33,7 +33,19 @@ def _green_spec(tmp: Path, spec: str = "wi-1") -> Path:
         "critique": "verified", "generated_at": "2099-01-01T00:00:00+00:00",
     }), encoding="utf-8")
     timeline.record_phase(tmp, spec, "implemented")
-    (d / "approvals" / "implement.md").write_text("**Status:** approve\n", encoding="utf-8")
+    token = security.issue_approval(
+        project_root=tmp,
+        spec_name=spec,
+        phase="implement",
+        status="approve",
+        artifact_path="",
+        artifact_sha256="",
+        summary="test approval",
+        idempotency_key=f"test-{spec}-implement",
+    )
+    (d / "approvals" / "implement.md").write_text(
+        f"**Status:** approve\n**Approval token:** {token}\n", encoding="utf-8"
+    )
     return d
 
 

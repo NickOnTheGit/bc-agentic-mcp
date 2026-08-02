@@ -177,7 +177,7 @@ the list a new developer must know (all are pytest-covered):
 
 ---
 
-## 7. Tool catalog (70 tools, grouped by phase)
+## 7. Tool catalog (73 registered tools, grouped by phase)
 
 **Intake & refinement** — raw material → delivery-ready item
 `bc_intake_start/add/analyze/graduate` (paste emails/notes, graduate to an item) ·
@@ -203,7 +203,8 @@ removals only, backed up) · `bc_generate_tests` · `bc_upgrade_codeunit` ·
 **Quality & review** — `bc_quality_check` (compiler+analyzers+guideline walls) ·
 `bc_detect` (mistake detectors → reflection nudges) · `bc_review` (record findings +
 rubric; findings auto-trigger reflection) · `bc_analyze_consistency` ·
-`bc_check_permission_coverage` (permissions = the team's #1 review topic)
+`bc_check_permission_coverage` (permissions = the team's #1 review topic) ·
+`bc_get_knowledge_article` (server-recorded BCQuality article reads)
 
 **Container proof** — `bc_env_preflight` (30s environment truth, required fresh) ·
 `bc_run_tests` (full cycle `sync→compile→publish→reinstall-dependents→run`, or
@@ -224,6 +225,11 @@ API checks with human "validates" sentences) · `bc_record_test` · `bc_verify`
 
 **Utilities** — `bc_health` · `bc_tool_health` · `bc_worktree` · `bc_upgrade_preflight` ·
 `bc_find_consumers` · `bc_implement` (deprecated dual-behavior alias)
+
+The live registration count is the source of truth; `tests/test_server_smoke.py`
+asserts that the server exposes exactly 73 tool names. Approval, evidence, and
+knowledge artifacts are server-signed. Set `BC_MCP_SECURITY_SECRET` when those
+artifacts must remain valid after a server restart.
 
 ---
 
